@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.4.68] - 2026-09-29
+
+### Changed
+
+- **Bookmarks have their own file**: The bookmark list is stored in `bookmarks.json` next to `state.json` (`%APPDATA%\TotalCommanderClone` for the built app). Panel layout and filters no longer share that file. An existing list inside `state.json` is copied over on the next launch.
+
+## [0.4.67] - 2026-09-29
+
+### Added
+
+- **Bookmark import and export**: The Bookmarks menu and the bookmarks sidebar can save the list to a JSON file, or load one by replacing the list or merging paths that are not already present.
+
+### Fixed
+
+- **Bookmarks stay saved**: Adding, editing, reordering, or deleting a bookmark writes it immediately. A second window that did not change bookmarks keeps the newer list on disk. An empty sidebar or a damaged `state.json` cannot replace a saved list. If the saved list is empty or unreadable, the app restores the last good copy, unless every bookmark was deleted on purpose. Nested bookmarks appear in the Bookmarks menu.
+
 ## [0.4.66] - 2026-08-28
 
 ### Changed

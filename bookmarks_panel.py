@@ -9,9 +9,9 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
     QMenu, QInputDialog, QMessageBox, QApplication, QHeaderView,
-    QHBoxLayout, QPushButton, QDialog,
+    QHBoxLayout, QPushButton, QDialog, QFileDialog,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QUrl
+from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QTimer
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QIcon
 from PyQt5.QtWidgets import QStyle
 from PyQt5.QtGui import QDesktopServices
@@ -338,6 +338,11 @@ class BookmarksPanel(QWidget):
         else:
             add_act = menu.addAction("Add current folder...")
             add_act.triggered.connect(self.addCurrentFolderRequested.emit)
+        menu.addSeparator()
+        export_act = menu.addAction("Export bookmarks...")
+        export_act.triggered.connect(self.exportBookmarksInteractive)
+        import_act = menu.addAction("Import bookmarks...")
+        import_act.triggered.connect(self.importBookmarksInteractive)
         if menu.actions():
             menu.exec_(self._tree.mapToGlobal(pos))
 
@@ -425,3 +430,80 @@ class BookmarksPanel(QWidget):
 
     def getStructure(self):
         return self._tree.getStructure()
+
+    # --------------------------------------------------------
+    # Method: exportBookmarksInteractive
+    # Purpose: Ask for a path and write the current bookmark tree.
+    # --------------------------------------------------------
+    def exportBookmarksInteractive(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export bookmarks",
+            "bookmarks.json",
+            "Bookmark JSON (*.json);;All files (*.*)",
+        )
+        if not path:
+            return False
+        try:
+            self._settings.exportBookmarks(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return False
+        QMessageBox.information(
+            self,
+            "Export complete",
+            f"Bookmarks saved to:\n{path}",
+        )
+        return True
+
+    # --------------------------------------------------------
+    # Method: importBookmarksInteractive
+    # Purpose: Load a bookmark file, replacing or merging the list.
+    # --------------------------------------------------------
+    def importBookmarksInteractive(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import bookmarks",
+            "",
+            "Bookmark JSON (*.json);;All files (*.*)",
+        )
+        if not path:
+            return False
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Import bookmarks")
+        box.setText("How should these bookmarks be imported?")
+        box.setInformativeText(
+            "Replace list removes the current bookmarks first. "
+            "Merge into list keeps current bookmarks and adds imported ones "
+            "whose path is not already present."
+        )
+        replace_btn = box.addButton("Replace list", QMessageBox.AcceptRole)
+        merge_btn = box.addButton("Merge into list", QMessageBox.ActionRole)
+        cancel_btn = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(cancel_btn)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked == replace_btn:
+            mode = "replace"
+        elif clicked == merge_btn:
+            mode = "merge"
+        else:
+            return False
+        try:
+            summary = self._settings.importBookmarks(path, mode)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return False
+        self.loadStructure()
+        window = self.window()
+        if window is not None and hasattr(window, "_rebuildBookmarksMenu"):
+            # Defer so we don't clear the Bookmarks menu while its Import action is running.
+            QTimer.singleShot(0, window._rebuildBookmarksMenu)
+        count = summary.get("count", 0)
+        QMessageBox.information(
+            self,
+            "Import complete",
+            f"The bookmark list now has {count} bookmark(s).\n\nLoaded from:\n{path}",
+        )
+        return True

@@ -279,6 +279,9 @@ class FileManagerApp(QMainWindow):
             return
         self._state_restore_done = True
         self._restoreState()
+        notice = self._settings.consumeBookmarkRecoveryNotice()
+        if notice:
+            self._showStatus(notice, timeout=12000)
         if not self._post_show_layout_done:
             self._post_show_layout_done = True
             self._runPostShowLayout()
@@ -1778,6 +1781,24 @@ class FileManagerApp(QMainWindow):
 
         self._bookmarks_menu.addSeparator()
 
+        export_action = QAction("Export Bookmarks...", self)
+        export_action.setToolTip(
+            "Export bookmarks\n\n"
+            "Save the bookmark list to a JSON file you can keep or copy to another computer."
+        )
+        export_action.triggered.connect(self._onExportBookmarks)
+        self._bookmarks_menu.addAction(export_action)
+
+        import_action = QAction("Import Bookmarks...", self)
+        import_action.setToolTip(
+            "Import bookmarks\n\n"
+            "Replace the list or merge bookmarks from a JSON file."
+        )
+        import_action.triggered.connect(self._onImportBookmarks)
+        self._bookmarks_menu.addAction(import_action)
+
+        self._bookmarks_menu.addSeparator()
+
         bookmarks = self._settings.getBookmarks()
         if not bookmarks:
             empty_action = QAction("(no bookmarks)", self)
@@ -1826,8 +1847,16 @@ class FileManagerApp(QMainWindow):
 
     def _onBookmarksStructureChanged(self, structure):
         """Persist bookmarks structure when user reorders or edits in the panel."""
-        self._settings.setBookmarksStructure(structure)
+        self._settings.setBookmarksStructure(structure, user_edit=True)
         self._rebuildBookmarksMenu()
+
+    def _onExportBookmarks(self):
+        if hasattr(self, "_bookmarks_panel"):
+            self._bookmarks_panel.exportBookmarksInteractive()
+
+    def _onImportBookmarks(self):
+        if hasattr(self, "_bookmarks_panel"):
+            self._bookmarks_panel.importBookmarksInteractive()
 
     def _onRemoveBookmark(self):
         bookmarks = self._settings.getBookmarks()
@@ -2843,9 +2872,7 @@ class FileManagerApp(QMainWindow):
         if bm_width >= 180:
             self._settings.setState("bookmarks_panel_width", bm_width)
 
-        structure = self._bookmarks_panel.getStructure()
-        if structure is not None:
-            self._settings.setBookmarksStructure(structure)
+        self._settings.applyBookmarkTreeSnapshot(self._bookmarks_panel.getStructure())
 
         current_tab = "libraries" if self._sidebar_tabs.currentIndex() == 1 else "bookmarks"
         self._settings.setSidebarState({

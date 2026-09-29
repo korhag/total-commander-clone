@@ -144,26 +144,85 @@ def _writeJson(path: str, data: Any) -> None:
 
 
 # ------------------------------------------------------------
+# Function: countBookmarkNodes
+# Purpose: Count bookmark entries, including ones nested in groups.
+# ------------------------------------------------------------
+def countBookmarkNodes(structure: Any) -> int:
+    """Count bookmark entries, including ones nested inside groups."""
+    count = 0
+
+    def walk(nodes: Any) -> None:
+        nonlocal count
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if node.get("type") == "group":
+                walk(node.get("children", []))
+            elif node.get("type") == "bookmark" or "path" in node:
+                count += 1
+
+    walk(structure)
+    return count
+
+
+def _readBackupBookmarks(backup_dir: str) -> Optional[list]:
+    path = os.path.join(backup_dir, "bookmarks.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("bookmarks"), list):
+        return data["bookmarks"]
+    return None
+
+
+def _bookmarksForBackup(
+    state: Dict[str, Any],
+    backup_dir: str,
+    allow_empty_bookmarks: bool,
+) -> list:
+    incoming = (state or {}).get("bookmarks", [])
+    if not isinstance(incoming, list):
+        incoming = []
+    if countBookmarkNodes(incoming) == 0 and not allow_empty_bookmarks:
+        existing = _readBackupBookmarks(backup_dir)
+        if existing is not None and countBookmarkNodes(existing) > 0:
+            return existing
+    return incoming
+
+
+# ------------------------------------------------------------
 # Function: writeConfigBackup
 # Purpose: Write latest settings/bookmarks/libraries for this PC
 #          under the local user-data directory. Overwrites previous
 #          files in the same computer folder. Does not touch Git.
+#          An empty bookmark list does not replace a non-empty
+#          backup unless allow_empty_bookmarks is true.
 # Output: Absolute backup directory path, or None on failure.
 # ------------------------------------------------------------
 def writeConfigBackup(
     settings: Dict[str, Any],
     state: Dict[str, Any],
     user_data_dir: Optional[str] = None,
+    allow_empty_bookmarks: bool = False,
 ) -> Optional[str]:
     host = getComputerName()
     backup_dir = getComputerBackupDir(user_data_dir, host)
     os.makedirs(backup_dir, exist_ok=True)
+    bookmarks = _bookmarksForBackup(state or {}, backup_dir, allow_empty_bookmarks)
 
     # Keep only these latest files (overwrite; remove stray older copies).
     payload = {
         "settings.json": settings or {},
         "bookmarks.json": {
-            "bookmarks": (state or {}).get("bookmarks", []),
+            "bookmarks": bookmarks,
         },
         "libraries.json": {
             "libraries": (state or {}).get("libraries", []),
@@ -171,7 +230,7 @@ def writeConfigBackup(
             "saved_library_filters": (state or {}).get("saved_library_filters", []),
         },
         "state.json": {
-            "bookmarks": (state or {}).get("bookmarks", []),
+            "bookmarks": bookmarks,
             "libraries": (state or {}).get("libraries", []),
             "folder_tags": (state or {}).get("folder_tags", {}),
             "saved_library_filters": (state or {}).get("saved_library_filters", []),
@@ -471,9 +530,15 @@ def backupConfig(
     settings: Dict[str, Any],
     state: Dict[str, Any],
     user_data_dir: Optional[str] = None,
+    allow_empty_bookmarks: bool = False,
 ) -> Optional[str]:
     try:
-        return writeConfigBackup(settings, state, user_data_dir=user_data_dir)
+        return writeConfigBackup(
+            settings,
+            state,
+            user_data_dir=user_data_dir,
+            allow_empty_bookmarks=allow_empty_bookmarks,
+        )
     except Exception as exc:
         print(f"[ConfigBackup] Write failed: {exc}")
         return None
