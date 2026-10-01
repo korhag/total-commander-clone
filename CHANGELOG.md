@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.4.69] - 2026-10-01
+
+### Changed
+
+- **Clearer bookmark drag-and-drop**: The line or highlight on a row is the action that will happen when you release. The top and bottom of a row reorder, the middle of a bookmark creates a group, and the middle of a group moves the item inside. A short hint under the list says which of those you are about to do. Hovering a collapsed group opens it. A group cannot be dropped inside itself, and a group stays expanded or collapsed after you move it.
+
 ## [0.4.68] - 2026-09-29
 
 ### Changed

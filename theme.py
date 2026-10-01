@@ -937,6 +937,12 @@ def getDarkThemeStylesheet(base_path=None, font_size_pt=10, metrics=None):
         min-width: 0;
     }}
 
+    QLabel#bookmarksDropHint {{
+        color: {c['blue']};
+        font-size: {fs['small']}pt;
+        padding: 2px 4px 4px 4px;
+    }}
+
     /* ====================================================== */
     /* Drive selector combo (file panel nav bar)                */
     /* ====================================================== */
