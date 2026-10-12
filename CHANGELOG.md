@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.5.0] - 2026-10-12
+
+### Added
+
+- **Selectable dark themes**: Settings → Theme now includes Matte Black, Osaka Jade, Tokyo Night, Gruvbox Dark, Nord, and Everforest, along with the existing Dark, Light, and Same as system options.
+
+### Changed
+
+- **Slimmer layout**: Row height, path bar, toolbar, menus, buttons, and corner radius are tighter, and padding follows Interface density instead of staying fixed. Text uses normal weight.
+
+### Fixed
+
+- **Fractional display scaling**: On Qt 5.15, 150% Windows scaling is no longer rounded up to 200%, which made the window look oversized.
+
 ## [0.4.69] - 2026-10-01
 
 ### Changed

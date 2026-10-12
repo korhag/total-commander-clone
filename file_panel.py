@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 
 from filter_spec import FilterSpec
+from theme import themeColor
 from name_filter import (
     match_exclude_terms,
     match_extension,
@@ -324,7 +325,7 @@ def build_entry_tooltip_html(entry, recursive=False):
     )
 
     return (
-        "<html><head/><body style='color:#dce0ee;'>"
+        f"<html><head/><body style='color:{themeColor('text', '#dce0ee')};'>"
         f"<div style='min-width:280px;max-width:520px;'>"
         f"<div style='font-size:13px;font-weight:600;margin-bottom:6px;'>"
         f"{icon} {display_title} <span style='color:#888;font-weight:normal;'>"

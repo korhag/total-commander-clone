@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
+from theme import themeColor
+
 
 # ============================================================
 # Class: BatchRenameDialog
@@ -235,9 +237,9 @@ class BatchRenameDialog(QDialog):
             is_changed = (new_name != original)
             if is_changed:
                 changed_count += 1
-                new_item.setForeground(QColor("#a6e3a1"))
+                new_item.setForeground(QColor(themeColor("green", "#a6e3a1")))
             else:
-                new_item.setForeground(QColor("#6c7086"))
+                new_item.setForeground(QColor(themeColor("overlay0", "#6c7086")))
 
             self._preview_table.setItem(row, 0, orig_item)
             self._preview_table.setItem(row, 1, new_item)

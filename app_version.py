@@ -7,7 +7,7 @@ Bump APP_VERSION here and record changes in CHANGELOG.md for every release.
 # Public constants
 # ------------------------------------------------------------
 APP_NAME = "Total Commander Clone"
-APP_VERSION = "0.4.69"
+APP_VERSION = "0.5.0"
 
 
 def getWindowTitle():

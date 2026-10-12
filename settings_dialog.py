@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal
 
-from theme import UI_SCALE_PRESETS, normalize_ui_scale, ui_scale_label
+from theme import UI_SCALE_PRESETS, getThemeChoices, normalize_ui_scale, ui_scale_label
 
 
 class SettingsDialog(QDialog):
@@ -40,9 +40,8 @@ class SettingsDialog(QDialog):
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self._theme_mode = QComboBox(self)
-        self._theme_mode.addItem("Dark", "dark")
-        self._theme_mode.addItem("Light", "light")
-        self._theme_mode.addItem("Same as system", "system")
+        for theme_id, label in getThemeChoices():
+            self._theme_mode.addItem(label, theme_id)
         form.addRow("Theme", self._theme_mode)
 
         self._font_size = QSpinBox(self)

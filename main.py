@@ -143,6 +143,10 @@ def main():
 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # Qt 5.15 otherwise rounds 150% up to 200%, which makes the UI oversized.
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
