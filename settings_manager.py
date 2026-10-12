@@ -589,7 +589,8 @@ class SettingsManager:
     # --------------------------------------------------------
     def exportProfile(self, path, settings_override=None):
         bundle = self.buildProfileBundle(settings_override=settings_override)
-        self._writeJson(path, bundle)
+        if not self._writeJson(path, bundle):
+            raise OSError(f"Could not write profile to {path}")
         return path
 
     # --------------------------------------------------------

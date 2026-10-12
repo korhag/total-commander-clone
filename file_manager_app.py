@@ -1106,6 +1106,11 @@ class FileManagerApp(QMainWindow):
         self._status_info.setObjectName("statusLabel")
         self._status_bar.addWidget(self._status_info, 1)
 
+        self._version_label = QLabel(f"v{APP_VERSION}")
+        self._version_label.setObjectName("statusLabel")
+        self._version_label.setToolTip(f"{APP_NAME} {APP_VERSION}")
+        self._status_bar.addPermanentWidget(self._version_label)
+
     # --------------------------------------------------------
     # Method: _initShortcuts
     # Purpose: Registers all keyboard shortcuts.
@@ -1153,8 +1158,10 @@ class FileManagerApp(QMainWindow):
         left_state = self._settings.getPanelState("left")
         right_state = self._settings.getPanelState("right")
 
-        left_path = left_state.get("current_path", "") or self._settings.getSetting("default_left_path", "") or home
-        right_path = right_state.get("current_path", "") or self._settings.getSetting("default_right_path", "") or home
+        saved_left = left_state.get("current_path", "")
+        saved_right = right_state.get("current_path", "")
+        left_path = saved_left or self._settings.getSetting("default_left_path", "") or home
+        right_path = saved_right or self._settings.getSetting("default_right_path", "") or home
 
         if not os.path.isdir(left_path):
             left_path = home
@@ -1164,9 +1171,11 @@ class FileManagerApp(QMainWindow):
         self._left_panel.restoreHistoryData(left_state)
         self._right_panel.restoreHistoryData(right_state)
 
-        if not self._left_panel.currentPath():
+        # Home is shown before this runs, so currentPath() is already set.
+        # Apply defaults when the saved folder is missing, not only when empty.
+        if not saved_left or not os.path.isdir(saved_left):
             self._left_panel.navigateTo(left_path)
-        if not self._right_panel.currentPath():
+        if not saved_right or not os.path.isdir(saved_right):
             self._right_panel.navigateTo(right_path)
 
         fallback_widths = self._settings.getSetting("column_widths", {})
@@ -1454,7 +1463,7 @@ class FileManagerApp(QMainWindow):
     # --------------------------------------------------------
     # Batch Rename: Opens the multi-rename dialog.
     # If files are selected, operates on selection only.
-    # Otherwise operates on all files in the current folder.
+    # Otherwise operates on the rows currently visible in the panel.
     # --------------------------------------------------------
     def _onBatchRename(self):
         if not self._active_panel:
@@ -1463,11 +1472,16 @@ class FileManagerApp(QMainWindow):
         if not current_dir:
             return
 
-        model = self._active_panel.sourceModel()
-        entries = [
-            model.entryAt(i) for i in range(model.rowCount())
-            if model.entryAt(i) is not None
-        ]
+        entries = self._active_panel.selectedEntries()
+        if not entries:
+            proxy = self._active_panel.proxyModel()
+            model = self._active_panel.sourceModel()
+            entries = []
+            for row in range(proxy.rowCount()):
+                source_index = proxy.mapToSource(proxy.index(row, 0))
+                entry = model.entryAt(source_index.row())
+                if entry is not None:
+                    entries.append(entry)
 
         if not entries:
             self._showStatus("No files to rename.")

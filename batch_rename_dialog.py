@@ -210,6 +210,40 @@ class BatchRenameDialog(QDialog):
         return stem + ext
 
     # --------------------------------------------------------
+    # Method: _renameTarget
+    # Purpose: Folder and basename to rename. In subfolders mode
+    #          entry["name"] is a relative path, so the new name
+    #          is computed from the basename and applied in the
+    #          file's own directory.
+    # --------------------------------------------------------
+    def _renameTarget(self, entry):
+        raw_name = entry.get("name") or ""
+        full_path = entry.get("full_path") or ""
+        original = os.path.basename(raw_name) or os.path.basename(full_path)
+        if full_path:
+            directory = os.path.dirname(full_path)
+        else:
+            directory = self._current_dir
+        return directory, original
+
+    # --------------------------------------------------------
+    # Method: _invalidRegexMessage
+    # Purpose: Return the regex error text when Find is not a
+    #          valid pattern, otherwise an empty string.
+    # --------------------------------------------------------
+    def _invalidRegexMessage(self):
+        if not self._chk_regex.isChecked():
+            return ""
+        find_text = self._find_edit.text()
+        if not find_text:
+            return ""
+        try:
+            re.compile(find_text)
+        except re.error as exc:
+            return str(exc)
+        return ""
+
+    # --------------------------------------------------------
     # Method: _caseInsensitiveReplace
     # Purpose: Plain-text case-insensitive replace that
     #          preserves the rest of the string.
@@ -226,10 +260,14 @@ class BatchRenameDialog(QDialog):
     def _updatePreview(self):
         self._preview_table.setRowCount(len(self._entries))
         changed_count = 0
+        pattern_error = self._invalidRegexMessage()
 
         for row, entry in enumerate(self._entries):
-            original = entry["name"]
-            new_name = self._computeNewName(original, entry["is_dir"])
+            _directory, original = self._renameTarget(entry)
+            if pattern_error:
+                new_name = original
+            else:
+                new_name = self._computeNewName(original, entry["is_dir"])
 
             orig_item = QTableWidgetItem(original)
             new_item = QTableWidgetItem(new_name)
@@ -245,10 +283,14 @@ class BatchRenameDialog(QDialog):
             self._preview_table.setItem(row, 1, new_item)
 
         self._renamed_count = changed_count
-        self._summary_label.setText(
-            f"{changed_count} of {len(self._entries)} file(s) will be renamed"
-        )
-        self._btn_apply.setEnabled(changed_count > 0)
+        if pattern_error:
+            self._summary_label.setText(f"Invalid regex: {pattern_error}")
+            self._btn_apply.setEnabled(False)
+        else:
+            self._summary_label.setText(
+                f"{changed_count} of {len(self._entries)} file(s) will be renamed"
+            )
+            self._btn_apply.setEnabled(changed_count > 0)
 
     # --------------------------------------------------------
     # Method: _onApply
@@ -256,22 +298,26 @@ class BatchRenameDialog(QDialog):
     #          name conflicts with auto-incrementing.
     # --------------------------------------------------------
     def _onApply(self):
+        if self._invalidRegexMessage():
+            self._updatePreview()
+            return
+
         successes = 0
         errors = []
 
         for entry in self._entries:
-            original = entry["name"]
+            directory, original = self._renameTarget(entry)
             new_name = self._computeNewName(original, entry["is_dir"])
 
             if new_name == original or not new_name.strip():
                 continue
 
-            old_path = os.path.join(self._current_dir, original)
-            new_path = os.path.join(self._current_dir, new_name)
+            old_path = os.path.join(directory, original)
+            new_path = os.path.join(directory, new_name)
 
             if os.path.exists(new_path) and os.path.normcase(new_path) != os.path.normcase(old_path):
-                new_name = self._resolveConflict(self._current_dir, new_name)
-                new_path = os.path.join(self._current_dir, new_name)
+                new_name = self._resolveConflict(directory, new_name)
+                new_path = os.path.join(directory, new_name)
 
             try:
                 os.rename(old_path, new_path)

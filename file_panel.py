@@ -2414,9 +2414,7 @@ class FilePanel(QWidget):
                     touched = True
             if not touched:
                 related = any(under_root(s) for s in sources)
-                related = related or (
-                    dest_dir and (under_root(dest_dir) or under_root(root_norm))
-                )
+                related = related or (dest_dir and under_root(dest_dir))
                 related = related or any(under_root(d) for d in dest_paths)
                 if related:
                     return "fallback"
@@ -2605,7 +2603,7 @@ class FilePanel(QWidget):
     # Behavior:
     #   - Enter  → commits the rename
     #   - Escape → cancels the rename
-    #   - Click outside (focus lost) → cancels the rename
+    #   - Click outside (focus lost) → commits the rename
     #   - Selects just the filename stem (not the extension)
     # --------------------------------------------------------
     def isRenaming(self):
@@ -2745,6 +2743,7 @@ class FilePanel(QWidget):
         return {
             "current_path": self._source_model.currentPath(),
             "history": self._history,
+            "history_index": self._history_index,
             "column_widths": self.getColumnWidths(),
             "column_visibility": self.getColumnVisibility(),
             "column_width_locked": lock_state["column_width_locked"],
@@ -2759,15 +2758,41 @@ class FilePanel(QWidget):
             "filter_advanced": self._proxy_model.filterSpec().to_dict(),
         }
 
+    def _historyIndexFromState(self, data, current):
+        """
+        Restore the Back/Forward position. Prefer the saved index,
+        clamped to the history list. Older state files have no index,
+        so fall back to the current folder, then the last entry.
+        """
+        history = self._history if isinstance(self._history, list) else []
+        if not history:
+            return -1
+
+        raw = data.get("history_index", None)
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return max(0, min(raw, len(history) - 1))
+
+        norm_current = os.path.normcase(os.path.normpath(current))
+        for index, item in enumerate(history):
+            if not isinstance(item, str):
+                continue
+            try:
+                if os.path.normcase(os.path.normpath(item)) == norm_current:
+                    return index
+            except (OSError, ValueError):
+                continue
+        return len(history) - 1
+
     def restoreHistoryData(self, data):
-        self._history = data.get("history", [])
+        history = data.get("history", [])
+        self._history = history if isinstance(history, list) else []
         self._source_model.setRecursive(
             bool(data.get("filter_include_subfolders", False))
         )
 
         current = data.get("current_path", "")
         if current and os.path.isdir(current):
-            self._history_index = len(self._history) - 1
+            self._history_index = self._historyIndexFromState(data, current)
             self.navigateTo(current, add_to_history=False)
         column_widths = self._sanitizeColumnWidths(data.get("column_widths"))
         if column_widths:
@@ -3451,6 +3476,8 @@ class FilePanel(QWidget):
         )
 
     def _onRecursiveScanFinished(self, gen, entries):
+        if gen != self._source_model._scan_generation:
+            return
         self._closeScanProgress()
         self._source_model.applyRecursiveScanResult(gen, entries)
         self._proxy_model.invalidateFilter()
@@ -3460,11 +3487,31 @@ class FilePanel(QWidget):
         if thr is not None:
             thr.deleteLater()
 
+    def _restoreCachedListingAfterCancel(self):
+        """Put the last cached subfolder listing back when a scan is cancelled."""
+        if self._source_model.listingFromCache():
+            return
+        path = self._source_model.currentPath()
+        if not path:
+            return
+        try:
+            from scan_cache import getScanCache
+
+            cached = getScanCache(path, self._source_model.showHiddenFiles())
+        except Exception:
+            cached = None
+        if cached is not None:
+            self._source_model.loadDirectory(path, force_rescan=False)
+
     def _onRecursiveScanCancelled(self, gen):
+        if gen != self._source_model._scan_generation:
+            return
         self._closeScanProgress()
         # Quiet reconcile cancel: keep cached listing visible.
         if self._source_model.listingFromCache():
             self._source_model._quiet_scan = False
+        else:
+            self._restoreCachedListingAfterCancel()
         self._updateStatusLabel()
         if self._scan_thread is None:
             return

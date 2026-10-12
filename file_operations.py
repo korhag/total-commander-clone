@@ -87,6 +87,34 @@ def _sameVolume(path_a, path_b):
     )
 
 
+def _destRelation(source, dest_path):
+    """
+    How dest_path sits relative to source.
+
+    Returns "same" when they are the same path, "inside" when source is a
+    folder and dest_path is strictly under it, otherwise None.
+    """
+    def _key(path):
+        try:
+            return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+        except (OSError, ValueError):
+            return ""
+
+    src = _key(source)
+    dest = _key(dest_path)
+    if not src or not dest:
+        return None
+    if src == dest:
+        return "same"
+    try:
+        source_is_dir = os.path.isdir(source)
+    except OSError:
+        source_is_dir = False
+    if source_is_dir and dest.startswith(src.rstrip("\\/") + os.sep):
+        return "inside"
+    return None
+
+
 def _winLongPath(path):
     """Windows extended-length path prefix (\\\\?\\ / \\\\?\\UNC\\)."""
     if os.name != "nt" or not path:
@@ -942,8 +970,36 @@ class FileOperationWorker(QThread):
     # --------------------------------------------------------
     # Method: _copyItem
     # --------------------------------------------------------
+    def _adjustDestination(self, source, dest_path, name, item_index, total_items):
+        """
+        Keep a copy/move from writing a path onto itself or into its own tree.
+        Returns (dest_path, name), or None when a move has nothing to do.
+        """
+        relation = _destRelation(source, dest_path)
+        if relation == "inside":
+            raise OSError("Cannot copy/move a folder into itself.")
+        if relation == "same" and self._operation == self.OPERATION_MOVE:
+            self._finishItemProgress(source, name, item_index, total_items)
+            return None
+        if relation == "same":
+            dest_path = _resolveConflictPath(dest_path)
+            name = os.path.basename(dest_path)
+        return dest_path, name
+
+    def _copyDirectoryOrAbort(self, source, dest_path, item_index, total_items):
+        """Copy a folder, and remove the partial destination if the user cancels."""
+        try:
+            self._copyDirectoryWithProgress(source, dest_path, item_index, total_items)
+        except UserAbortError:
+            self._removePartial(dest_path)
+            raise
+
     def _copyItem(self, source, dest_dir, item_index, total_items, relative_path=None):
         dest_path, name = self._destPathForItem(source, dest_dir, relative_path)
+        adjusted = self._adjustDestination(source, dest_path, name, item_index, total_items)
+        if adjusted is None:
+            return
+        dest_path, name = adjusted
 
         if os.path.exists(dest_path):
             resolved = self._askConflict(source, dest_path, name)
@@ -959,7 +1015,7 @@ class FileOperationWorker(QThread):
             if os.path.exists(dest_path):
                 shutil.rmtree(dest_path)
             os.makedirs(dest_path, exist_ok=True)
-            self._copyDirectoryWithProgress(source, dest_path, item_index, total_items)
+            self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
         else:
             self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
 
@@ -970,6 +1026,10 @@ class FileOperationWorker(QThread):
     # --------------------------------------------------------
     def _moveItem(self, source, dest_dir, item_index, total_items, relative_path=None):
         dest_path, name = self._destPathForItem(source, dest_dir, relative_path)
+        adjusted = self._adjustDestination(source, dest_path, name, item_index, total_items)
+        if adjusted is None:
+            return
+        dest_path, name = adjusted
 
         if os.path.exists(dest_path):
             resolved = self._askConflict(source, dest_path, name)
@@ -1001,7 +1061,7 @@ class FileOperationWorker(QThread):
                 os.remove(dest_path)
 
         if os.path.isdir(source):
-            self._copyDirectoryWithProgress(source, dest_path, item_index, total_items)
+            self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
             shutil.rmtree(source)
         else:
             self._copyFileWithProgress(source, dest_path, name, item_index, total_items)

@@ -13,14 +13,17 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # ------------------------------------------------------------
 # Function: folderTreeStats
 # Purpose: Walk a folder tree; return (total_bytes, file_count, dir_count)
-#          or None on failure.
+#          or None on failure. is_cancelled, when set, is checked between
+#          directories so a closed dialog can stop the walk.
 # ------------------------------------------------------------
-def folderTreeStats(path):
+def folderTreeStats(path, is_cancelled=None):
     total_bytes = 0
     file_count = 0
     dir_count = 0
     try:
         for root, dirs, files in os.walk(path):
+            if is_cancelled is not None and is_cancelled():
+                return None
             dir_count += len(dirs)
             for name in files:
                 file_count += 1
@@ -66,7 +69,10 @@ class FolderSizeWorker(QThread):
         if self._cancelled:
             return
         try:
-            stats = folderTreeStats(self._path)
+            stats = folderTreeStats(
+                self._path,
+                is_cancelled=lambda: self._cancelled,
+            )
             if self._cancelled:
                 return
             if stats is None:

@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.5.2] - 2026-10-12
+
+### Added
+
+- **Version on the status bar**: The app version stays on the bottom right, next to the status text.
+
+## [0.5.1] - 2026-10-12
+
+### Fixed
+
+- **Copy or move onto the same item**: Pasting or copying into the folder that already holds the item no longer overwrites it. A copy is saved as "name (1)", and a move is left where it is.
+- **Folder into itself**: Copying or moving a folder into its own subfolder is refused, so the original cannot be deleted out from under the copy.
+- **Cancelled folder copy**: Cancelling a folder copy removes the partial destination. The source stays in place.
+- **Batch rename**: Uses the selection, or the visible rows when nothing is selected. In subfolders mode the new name changes the file name only, inside that file's folder. An invalid regex is shown and Apply stays off.
+- **Default panel folders**: A configured default left or right path opens on startup when there is no saved folder.
+- **Back and Forward**: The history position is restored with the session.
+- **Subfolders refresh**: A transfer outside the current folder no longer forces a full subfolder rescan.
+- **Subfolder scan**: A finished or cancelled scan from an older folder no longer closes the scan that is running. Cancelling restores the cached listing when one exists.
+- **Properties**: Closing the dialog stops the folder size calculation.
+- **Profile export**: A failed save is reported instead of "Export complete".
+
 ## [0.5.0] - 2026-10-12
 
 ### Added

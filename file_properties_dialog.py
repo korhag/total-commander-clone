@@ -178,6 +178,23 @@ class FilePropertiesDialog(QDialog):
         if entry.get("is_dir"):
             self._startFolderSizeCalc()
 
+    def done(self, result):
+        self._stopFolderSizeWorker()
+        super().done(result)
+
+    def _stopFolderSizeWorker(self):
+        """Stop the background size walk before the dialog is destroyed."""
+        worker = self._folder_size_worker
+        if worker is None:
+            return
+        self._folder_size_worker = None
+        try:
+            worker.cancel()
+            if worker.isRunning():
+                worker.wait(2000)
+        except Exception:
+            pass
+
     def _stat_safe(self):
         try:
             return os.stat(self._path, follow_symlinks=False)
