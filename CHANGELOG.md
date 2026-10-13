@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.6.0] - 2026-10-13
+
+### Added
+
+- **Thumbnails**: Each file panel has a Thumbnails button. When it is on, image files (jpg, png, gif, bmp, webp, and the other formats Qt can read) show a small preview in the Name column, and the rows grow taller. Folders and other files keep their normal icon. The choice is saved separately for the left and right panel.
+
 ## [0.5.4] - 2026-10-13
 
 ### Fixed

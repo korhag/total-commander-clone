@@ -25,6 +25,7 @@ from name_filter import (
     parse_filter_terms,
 )
 from recursive_scan_worker import RecursiveScanThread
+from thumbnail_loader import ThumbnailLoader, isThumbnailCandidate
 
 
 # Pattern for splitting names into text vs digit runs (natural sort).
@@ -106,7 +107,7 @@ from PyQt5.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QVariant, QMimeData,
     QUrl, pyqtSignal, QSortFilterProxyModel, QPoint, QTimer, QEvent,
     QItemSelectionModel, QSize, QItemSelection, QItemSelectionRange,
-    QFileInfo, QMimeDatabase,
+    QFileInfo, QMimeDatabase, QFileSystemWatcher,
 )
 from PyQt5.QtGui import (
     QDrag, QDesktopServices, QIcon, QKeySequence,
@@ -412,6 +413,11 @@ class FileSystemModel(QAbstractTableModel):
         self._show_hidden = False
         self._recursive = False
         self._icon_provider = QFileIconProvider()
+        self._thumbnails = ThumbnailLoader(self)
+        self._thumbnails.thumbnailReady.connect(self._onThumbnailReady)
+        self._show_thumbnails = False
+        self._thumbnail_size = 48
+        self._thumb_row_hints = {}
         self._scan_generation = 0
         self._date_modified_format_key = DEFAULT_DATE_MODIFIED_FORMAT
         self._quiet_scan = False
@@ -423,6 +429,91 @@ class FileSystemModel(QAbstractTableModel):
     # --------------------------------------------------------
     def showHiddenFiles(self):
         return self._show_hidden
+
+    # --------------------------------------------------------
+    # Method: showThumbnails
+    # Purpose: True when image files should show a preview icon.
+    # --------------------------------------------------------
+    def showThumbnails(self):
+        return self._show_thumbnails
+
+    # --------------------------------------------------------
+    # Method: setShowThumbnails
+    # Purpose: Turn previews on or off and repaint the Name column.
+    # --------------------------------------------------------
+    def setShowThumbnails(self, show):
+        show = bool(show)
+        if show == self._show_thumbnails:
+            return
+        self._show_thumbnails = show
+        if not show:
+            self._thumbnails.cancelPending()
+        self._emitNameDecorationsChanged()
+
+    # --------------------------------------------------------
+    # Method: setThumbnailSize
+    # Purpose: Pixel size of previews. Follows the UI scale.
+    # --------------------------------------------------------
+    def setThumbnailSize(self, size):
+        size = max(1, int(size))
+        if size == self._thumbnail_size:
+            return
+        self._thumbnail_size = size
+        if self._show_thumbnails:
+            self._emitNameDecorationsChanged()
+
+    def _emitNameDecorationsChanged(self):
+        rows = len(self._entries)
+        if rows <= 0:
+            return
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(rows - 1, 0),
+            [Qt.DecorationRole],
+        )
+
+    def _onThumbnailReady(self, path):
+        """Repaint the row whose preview just finished loading."""
+        if not self._show_thumbnails or not path:
+            return
+        norm = os.path.normcase(os.path.normpath(path))
+        hint = self._thumb_row_hints.get(norm, -1)
+        if 0 <= hint < len(self._entries):
+            hinted = self._entries[hint].get("full_path") or ""
+            if os.path.normcase(os.path.normpath(hinted)) == norm:
+                index = self.index(hint, 0)
+                self.dataChanged.emit(index, index, [Qt.DecorationRole])
+                return
+        for row, entry in enumerate(self._entries):
+            full = entry.get("full_path") or ""
+            if os.path.normcase(os.path.normpath(full)) == norm:
+                index = self.index(row, 0)
+                self.dataChanged.emit(index, index, [Qt.DecorationRole])
+                return
+
+    # --------------------------------------------------------
+    # Method: _iconForEntry
+    # Purpose: Preview icon for an image when thumbnails are on,
+    #          otherwise the normal file icon.
+    # --------------------------------------------------------
+    def _iconForEntry(self, entry, row):
+        full_path = entry.get("full_path") or ""
+        if (
+            self._show_thumbnails
+            and not entry.get("is_dir")
+            and isThumbnailCandidate(entry.get("name") or "", entry.get("size", -1))
+        ):
+            if full_path:
+                norm = os.path.normcase(os.path.normpath(full_path))
+                self._thumb_row_hints[norm] = row
+            icon = self._thumbnails.request(
+                full_path,
+                entry.get("mod_time") or 0,
+                self._thumbnail_size,
+            )
+            if icon is not None:
+                return icon
+        return self._icon_provider.icon(QFileInfo(full_path))
 
     def listingFromCache(self):
         return bool(self._listing_from_cache)
@@ -441,6 +532,8 @@ class FileSystemModel(QAbstractTableModel):
     def applyRecursiveScanResult(self, gen, entries):
         if gen != self._scan_generation:
             return
+        self._thumbnails.cancelPending()
+        self._thumb_row_hints.clear()
         self.beginResetModel()
         self._entries = list(entries)
         self._entries.sort(
@@ -654,6 +747,8 @@ class FileSystemModel(QAbstractTableModel):
     # --------------------------------------------------------
     def loadDirectory(self, path, force_rescan=False):
         path = os.path.normpath(path)
+        self._thumbnails.cancelPending()
+        self._thumb_row_hints.clear()
         self.recursiveScanAbortRequested.emit()
         self._quiet_scan = False
         self._listing_from_cache = False
@@ -823,8 +918,7 @@ class FileSystemModel(QAbstractTableModel):
                 )
 
         if role == Qt.DecorationRole and col == 0:
-            file_info = QFileInfo(entry["full_path"])
-            return self._icon_provider.icon(file_info)
+            return self._iconForEntry(entry, index.row())
 
         if role == Qt.UserRole:
             return entry
@@ -1468,6 +1562,14 @@ class FilePanel(QWidget):
         self._column_width_save_timer.setSingleShot(True)
         self._column_width_save_timer.setInterval(400)
         self._column_width_save_timer.timeout.connect(self._persistColumnWidthsToState)
+        # Wait for a burst of changes (a copy, a download) to settle.
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.setSingleShot(True)
+        self._auto_refresh_timer.setInterval(300)
+        self._auto_refresh_timer.timeout.connect(self._applyPendingAutoRefresh)
+        self._auto_refresh_deferred = False
+        self._dir_watcher = QFileSystemWatcher(self)
+        self._dir_watcher.directoryChanged.connect(self._onWatchedDirectoryChanged)
 
         self._initUI()
         self._connectSignals()
@@ -1691,6 +1793,26 @@ class FilePanel(QWidget):
             self._btn_filter_options.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
             self._btn_filter_options.setText("Settings")
 
+        self._btn_thumbnails = QPushButton("Thumbnails")
+        self._btn_thumbnails.setObjectName("thumbnailButton")
+        self._btn_thumbnails.setCheckable(True)
+        self._btn_thumbnails.setFixedHeight(NAV_BAR_HEIGHT)
+        self._btn_thumbnails.setAutoDefault(False)
+        self._btn_thumbnails.setDefault(False)
+        self._btn_thumbnails.setToolTip(
+            "Thumbnails\n\n"
+            "Show a small preview of image files in the Name column. "
+            "Folders and other files keep their normal icon. "
+            "This choice is saved for this panel."
+        )
+        thumb_icon = QIcon.fromTheme("image-x-generic")
+        if thumb_icon.isNull():
+            thumb_icon = style.standardIcon(QStyle.SP_FileDialogInfoView)
+        if not thumb_icon.isNull():
+            self._btn_thumbnails.setIcon(thumb_icon)
+            self._btn_thumbnails.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
+        self._btn_thumbnails.toggled.connect(self._onThumbnailsToggled)
+
         self._btn_new_folder = QPushButton()
         self._btn_new_folder.setObjectName("navButton")
         self._btn_new_folder.setFixedSize(30, NAV_BAR_HEIGHT)
@@ -1719,6 +1841,7 @@ class FilePanel(QWidget):
         nav_layout.addWidget(self._filter_edit, 1)
         nav_layout.addWidget(self._btn_clear_filter, 0, Qt.AlignVCenter)
         nav_layout.addWidget(self._btn_filter_options, 0, Qt.AlignVCenter)
+        nav_layout.addWidget(self._btn_thumbnails, 0, Qt.AlignVCenter)
 
         layout.addLayout(nav_layout)
 
@@ -1813,6 +1936,8 @@ class FilePanel(QWidget):
         self._btn_clear_filter.setFixedHeight(h)
         self._btn_filter_options.setFixedHeight(h)
         self._btn_filter_options.setIconSize(icon_sz)
+        self._btn_thumbnails.setFixedHeight(h)
+        self._btn_thumbnails.setIconSize(icon_sz)
         self._drive_combo.setFixedSize(metrics["drive_combo_width"], h)
         arrow_w = max(12, int(round(btn_w * 14 / 30)))
         self._drive_arrow.setFixedSize(arrow_w, h)
@@ -1822,15 +1947,63 @@ class FilePanel(QWidget):
             self._drive_line_edit.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
         self._filter_edit.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
-        vh = self._table.verticalHeader()
-        row_h = metrics["table_row_height"]
-        vh.setDefaultSectionSize(row_h)
-        vh.setMinimumSectionSize(max(16, row_h - 4))
-
-        table_icon = metrics.get("table_icon_size", 16)
-        self._table.setIconSize(QSize(table_icon, table_icon))
+        self._ui_metrics = metrics
         self._layout_scale = float(metrics.get("layout_scale", 1.0))
+        self._applyRowMetrics()
         self._refreshHeaderSectionMinimums()
+
+    # --------------------------------------------------------
+    # Method: _applyRowMetrics
+    # Purpose: Row height and icon size. Thumbnails use a taller
+    #          row so the preview fits; otherwise the normal list size.
+    # --------------------------------------------------------
+    def _applyRowMetrics(self):
+        metrics = getattr(self, "_ui_metrics", None)
+        if not metrics:
+            return
+        if self._source_model.showThumbnails():
+            row_h = metrics["thumbnail_row_height"]
+            icon = metrics["thumbnail_size"]
+            self._source_model.setThumbnailSize(icon)
+        else:
+            row_h = metrics["table_row_height"]
+            icon = metrics.get("table_icon_size", 16)
+        vh = self._table.verticalHeader()
+        vh.setMinimumSectionSize(max(16, row_h - 4))
+        vh.setDefaultSectionSize(row_h)
+        for row in range(vh.count()):
+            if vh.sectionSize(row) != row_h:
+                vh.resizeSection(row, row_h)
+        self._table.setIconSize(QSize(icon, icon))
+
+    # --------------------------------------------------------
+    # Method: setShowThumbnails
+    # Purpose: Toggle image previews for this panel and remember it.
+    # --------------------------------------------------------
+    def setShowThumbnails(self, enabled, persist=True):
+        enabled = bool(enabled)
+        self._btn_thumbnails.blockSignals(True)
+        self._btn_thumbnails.setChecked(enabled)
+        self._btn_thumbnails.blockSignals(False)
+        metrics = getattr(self, "_ui_metrics", None)
+        if enabled and metrics:
+            self._source_model.setThumbnailSize(metrics["thumbnail_size"])
+        self._source_model.setShowThumbnails(enabled)
+        self._applyRowMetrics()
+        if persist:
+            self._persistShowThumbnails()
+
+    def _onThumbnailsToggled(self, checked):
+        self.setShowThumbnails(checked, persist=True)
+
+    def _persistShowThumbnails(self):
+        """Remember the toggle in this panel's saved state."""
+        if self._settings_manager is None:
+            return
+        current = dict(self._settings_manager.getPanelState(self._panel_side))
+        current["show_thumbnails"] = self._source_model.showThumbnails()
+        self._settings_manager.setPanelState(self._panel_side, current)
+        self._settings_manager.saveSettings()
 
     # --------------------------------------------------------
     # Column width persistence (all columns; state.json per panel).
@@ -2352,6 +2525,7 @@ class FilePanel(QWidget):
         self._updateNavButtons()
         self._updateStatusLabel()
         self._syncDriveCombo(path)
+        self._watchCurrentFolder()
         self.pathChanged.emit(path)
         QTimer.singleShot(0, self._scrollFileTableToTop)
         return True
@@ -2379,6 +2553,139 @@ class FilePanel(QWidget):
             self._source_model.loadDirectory(current, force_rescan=force_rescan)
             self._reselectPaths(selected)
             self._updateStatusLabel()
+
+    # --------------------------------------------------------
+    # Method: setAutoRefreshEnabled
+    # Purpose: Turn the folder watcher on or off. When it is on,
+    #          a change made outside the app reloads this panel.
+    # --------------------------------------------------------
+    def setAutoRefreshEnabled(self, enabled):
+        if enabled:
+            self._watchCurrentFolder()
+            return
+        self._auto_refresh_timer.stop()
+        self._auto_refresh_deferred = False
+        self._clearDirectoryWatch()
+
+    # --------------------------------------------------------
+    # Method: _autoRefreshEnabled
+    # Purpose: The setting defaults to on. Panels with no
+    #          settings manager follow that default.
+    # --------------------------------------------------------
+    def _autoRefreshEnabled(self):
+        if self._settings_manager is None:
+            return True
+        return bool(self._settings_manager.getSetting("auto_refresh_panels", True))
+
+    # --------------------------------------------------------
+    # Method: _watchCurrentFolder
+    # Purpose: Watch only the folder open in this panel.
+    #          Subfolders are not watched; a tree watch is
+    #          too expensive, and the scan cache is marked
+    #          stale instead.
+    # --------------------------------------------------------
+    def _watchCurrentFolder(self):
+        if not self._autoRefreshEnabled():
+            self._clearDirectoryWatch()
+            return
+        current = self._source_model.currentPath()
+        if not current or not os.path.isdir(current):
+            self._clearDirectoryWatch()
+            return
+        self._setWatchedDirectory(current)
+
+    def _clearDirectoryWatch(self):
+        watched = list(self._dir_watcher.directories())
+        if watched:
+            self._dir_watcher.removePaths(watched)
+
+    def _setWatchedDirectory(self, path):
+        wanted = os.path.normpath(path)
+        wanted_key = os.path.normcase(wanted)
+        for watched in list(self._dir_watcher.directories()):
+            try:
+                same = os.path.normcase(os.path.normpath(watched)) == wanted_key
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                self._dir_watcher.removePath(watched)
+        still = False
+        for watched in self._dir_watcher.directories():
+            try:
+                if os.path.normcase(os.path.normpath(watched)) == wanted_key:
+                    still = True
+                    break
+            except (OSError, ValueError):
+                continue
+        if not still:
+            self._dir_watcher.addPath(wanted)
+
+    # --------------------------------------------------------
+    # Method: _onWatchedDirectoryChanged
+    # Purpose: Coalesce a burst of changes, then reload.
+    #          Windows sometimes drops the watch after an
+    #          event, so the folder is added again.
+    # --------------------------------------------------------
+    def _onWatchedDirectoryChanged(self, path):
+        if not self._autoRefreshEnabled():
+            return
+        current = self._source_model.currentPath()
+        if current and os.path.isdir(current):
+            self._setWatchedDirectory(current)
+        elif path and os.path.isdir(path):
+            self._setWatchedDirectory(path)
+        self._auto_refresh_timer.start()
+
+    # --------------------------------------------------------
+    # Method: _renameInProgress
+    # Purpose: True while the inline rename field exists.
+    #          A reload would throw away the name being typed.
+    # --------------------------------------------------------
+    def _renameInProgress(self):
+        return self._rename_edit is not None
+
+    # --------------------------------------------------------
+    # Method: _applyPendingAutoRefresh
+    # Purpose: Reload the open folder after outside changes.
+    #          The selection and the vertical scroll stay put.
+    #          In Subfolders mode the tree is not walked again;
+    #          the saved scan is dropped so the next Refresh
+    #          reads the disk.
+    # --------------------------------------------------------
+    def _applyPendingAutoRefresh(self):
+        if self._renameInProgress():
+            self._auto_refresh_deferred = True
+            return
+        self._auto_refresh_deferred = False
+        if not self._autoRefreshEnabled():
+            return
+        current = self._source_model.currentPath()
+        if not current or not os.path.isdir(current):
+            return
+        if self._source_model.isRecursive():
+            try:
+                from scan_cache import invalidateScanCache
+
+                invalidateScanCache(
+                    current, self._source_model.showHiddenFiles()
+                )
+            except Exception:
+                pass
+            return
+
+        bar = self._table.verticalScrollBar()
+        scroll_value = bar.value() if bar is not None else 0
+
+        self.refresh(force_rescan=False)
+
+        if bar is None:
+            return
+
+        def restoreScroll():
+            bar.setValue(min(scroll_value, bar.maximum()))
+
+        restoreScroll()
+        QTimer.singleShot(0, restoreScroll)
 
     # --------------------------------------------------------
     # Method: _reselectPaths
@@ -2567,6 +2874,55 @@ class FilePanel(QWidget):
     # --------------------------------------------------------
     def selectedPaths(self):
         return [e["full_path"] for e in self.selectedEntries()]
+
+    # --------------------------------------------------------
+    # Method: primaryFileEntry
+    # Purpose: The file the viewer and the editor should open.
+    #          Uses the first selected file. A selected folder
+    #          is not a file, so this returns None.
+    # --------------------------------------------------------
+    def primaryFileEntry(self):
+        for entry in self.selectedEntries():
+            if entry and not entry.get("is_dir"):
+                return entry
+        return None
+
+    # --------------------------------------------------------
+    # Method: selectAdjacentFile
+    # Purpose: Move the selection to the next or previous
+    #          visible file, skipping folders. Used by the
+    #          viewer (N / P).
+    # Input: step (int) - 1 for next, -1 for previous.
+    # Output: entry dict, or None at the end of the list.
+    # --------------------------------------------------------
+    def selectAdjacentFile(self, step):
+        step = 1 if step >= 0 else -1
+        proxy = self._proxy_model
+        count = proxy.rowCount()
+        if count <= 0:
+            return None
+
+        current = -1
+        selected = self._table.selectionModel().selectedRows()
+        if selected:
+            current = selected[0].row()
+        elif self._table.currentIndex().isValid():
+            current = self._table.currentIndex().row()
+
+        if current < 0:
+            row = 0 if step > 0 else count - 1
+        else:
+            row = current + step
+
+        while 0 <= row < count:
+            source_index = proxy.mapToSource(proxy.index(row, 0))
+            entry = self._source_model.entryAt(source_index.row())
+            if entry and not entry.get("is_dir"):
+                self._table.selectRow(row)
+                self._table.scrollTo(proxy.index(row, 0))
+                return entry
+            row += step
+        return None
 
     # --------------------------------------------------------
     # Method: selectedTransferSpecs
@@ -2808,6 +3164,8 @@ class FilePanel(QWidget):
             self._rename_edit.deleteLater()
             self._rename_edit = None
         self._table.setRenamingRow(-1)
+        if self._auto_refresh_deferred:
+            self._auto_refresh_timer.start()
 
     # --------------------------------------------------------
     # History / State for Persistence
@@ -2830,6 +3188,7 @@ class FilePanel(QWidget):
             "filter_words_combine_and": self._proxy_model.filterWordsCombineAnd(),
             "filter_include_subfolders": self._source_model.isRecursive(),
             "filter_advanced": self._proxy_model.filterSpec().to_dict(),
+            "show_thumbnails": self._source_model.showThumbnails(),
         }
 
     def _historyIndexFromState(self, data, current):
@@ -2902,6 +3261,7 @@ class FilePanel(QWidget):
         self._proxy_model.setFilterSpec(
             FilterSpec.from_dict(data.get("filter_advanced"))
         )
+        self.setShowThumbnails(bool(data.get("show_thumbnails", False)), persist=False)
         self._updateFilterUi()
 
     # --------------------------------------------------------

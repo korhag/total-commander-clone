@@ -75,6 +75,8 @@ DEFAULT_SETTINGS = {
     "skip_update_version": "",
     # Cache recursive (Subfolders) scan trees in memory and on disk.
     "cache_recursive_scans": True,
+    # Reload a panel when its folder changes outside this app.
+    "auto_refresh_panels": True,
 }
 
 

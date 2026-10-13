@@ -33,6 +33,7 @@ from settings_manager import SettingsManager
 from windows_shell_clipboard import setFileClipboard, getClipboardDropEffect
 from app_version import APP_VERSION, APP_NAME, getWindowTitle
 from file_properties_dialog import showFileProperties
+from file_viewer import FileViewerWidget, FileViewerWindow, openInSystemEditor
 from settings_dialog import SettingsDialog
 from theme import applyTheme, getUiMetrics, normalize_ui_scale, step_ui_scale, ui_scale_label
 from app_updater import (
@@ -173,6 +174,7 @@ class FileManagerApp(QMainWindow):
         self._active_panel = None
         self._clipboard_paths = []
         self._clipboard_mode = None
+        self._viewer_window = None
 
         self._initWindow()
         self._initStatusBar()
@@ -423,6 +425,30 @@ class FileManagerApp(QMainWindow):
         )
         self._action_refresh.triggered.connect(self._onRefresh)
         view_menu.addAction(self._action_refresh)
+
+        self._action_view_file = QAction("View\tF3", self)
+        self._action_view_file.setToolTip(
+            "View\n\n"
+            "Open the selected file in the built-in viewer. "
+            "N and P move to the next and previous file. Shortcut: F3."
+        )
+        self._action_view_file.triggered.connect(self._onViewFile)
+        view_menu.addAction(self._action_view_file)
+
+        self._action_edit_file = QAction("Edit\tF4", self)
+        self._action_edit_file.setToolTip(
+            "Edit\n\nOpen the selected file in the system editor. Shortcut: F4."
+        )
+        self._action_edit_file.triggered.connect(self._onEditFile)
+        view_menu.addAction(self._action_edit_file)
+
+        self._action_quick_view = QAction("Quick View\tCtrl+Q", self)
+        self._action_quick_view.setToolTip(
+            "Quick view\n\n"
+            "Show the selected file in the other panel. Shortcut: Ctrl+Q."
+        )
+        self._action_quick_view.triggered.connect(self._onToggleQuickView)
+        view_menu.addAction(self._action_quick_view)
 
         view_menu.addSeparator()
 
@@ -736,6 +762,11 @@ class FileManagerApp(QMainWindow):
         self._right_stack.addWidget(self._right_panel)
         self._right_stack.addWidget(self._right_library_browser)
 
+        self._left_quick_view = FileViewerWidget()
+        self._right_quick_view = FileViewerWidget()
+        self._left_stack.addWidget(self._left_quick_view)
+        self._right_stack.addWidget(self._right_quick_view)
+
         self._center_buttons = self._buildCenterButtons()
 
         panels_layout.addWidget(self._left_stack, 1)
@@ -815,6 +846,12 @@ class FileManagerApp(QMainWindow):
 
         self._left_panel.selectionChanged.connect(self._updateStatusBar)
         self._right_panel.selectionChanged.connect(self._updateStatusBar)
+        self._left_panel.selectionChanged.connect(
+            lambda: self._refreshQuickView(self._left_panel)
+        )
+        self._right_panel.selectionChanged.connect(
+            lambda: self._refreshQuickView(self._right_panel)
+        )
 
         self._left_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
         self._right_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
@@ -1073,6 +1110,16 @@ class FileManagerApp(QMainWindow):
                 "Rename\n\nRename the selected item in the active panel. Shortcut: F2.",
             ),
             (
+                "F3 View",
+                self._onViewFile,
+                "View\n\nOpen the selected file in the built-in viewer. Shortcut: F3.",
+            ),
+            (
+                "F4 Edit",
+                self._onEditFile,
+                "Edit\n\nOpen the selected file in the system editor. Shortcut: F4.",
+            ),
+            (
                 "F5 Refresh",
                 self._onRefreshActivePanel,
                 "Refresh\n\nReload the listing for the active panel only. Shortcut: F5.",
@@ -1132,6 +1179,8 @@ class FileManagerApp(QMainWindow):
     def _initShortcuts(self):
         shortcuts = {
             QKeySequence(Qt.Key_F2):                     self._onRename,
+            QKeySequence(Qt.Key_F3):                     self._onViewFile,
+            QKeySequence(Qt.Key_F4):                     self._onEditFile,
             QKeySequence(Qt.Key_F5):                     self._onRefreshActivePanel,
             QKeySequence(Qt.Key_F6):                     self._onCopyToOther,
             QKeySequence(Qt.Key_F7):                     self._onMoveToOther,
@@ -1151,6 +1200,7 @@ class FileManagerApp(QMainWindow):
             QKeySequence("Ctrl+Shift+S"):                 self._onSwapPanels,
             QKeySequence("Ctrl+Shift+L"):                 self._onToggleLibraryBrowserActive,
             QKeySequence("Ctrl+Shift+M"):                 self._onMirrorToOther,
+            QKeySequence("Ctrl+Q"):                       self._onToggleQuickView,
             QKeySequence("Ctrl+,"):                       self._onOpenSettings,
         }
 
@@ -1575,6 +1625,77 @@ class FileManagerApp(QMainWindow):
             QMessageBox.warning(self, "Error", f"Could not open file:\n{e}")
 
     # --------------------------------------------------------
+    # Method: _onViewFile
+    # Purpose: F3. Open the built-in viewer for the selected file.
+    # --------------------------------------------------------
+    def _onViewFile(self):
+        if not self._activePanelReady():
+            return
+        if self._viewer_window is None:
+            self._viewer_window = FileViewerWindow(self)
+        self._viewer_window.viewPanelFile(self._active_panel)
+
+    # --------------------------------------------------------
+    # Method: _onEditFile
+    # Purpose: F4. Open the selected file in the system editor.
+    # --------------------------------------------------------
+    def _onEditFile(self):
+        if not self._activePanelReady():
+            return
+        entry = self._active_panel.primaryFileEntry()
+        if entry is None:
+            self._showStatus("Select a file to edit.")
+            return
+        ok, message = openInSystemEditor(entry["full_path"])
+        if not ok:
+            QMessageBox.warning(self, "Edit", message or "Could not open the editor.")
+
+    # --------------------------------------------------------
+    # Method: _onToggleQuickView
+    # Purpose: Ctrl+Q. Show the active panel's file in the
+    #          other panel, or hide quick view if it is on.
+    # --------------------------------------------------------
+    def _onToggleQuickView(self):
+        if not self._active_panel:
+            return
+        left_on = self._left_stack.currentWidget() is self._left_quick_view
+        right_on = self._right_stack.currentWidget() is self._right_quick_view
+        if left_on or right_on:
+            if left_on:
+                self._left_stack.setCurrentWidget(self._left_panel)
+            if right_on:
+                self._right_stack.setCurrentWidget(self._right_panel)
+            self._showStatus("Quick view off.")
+            return
+
+        other = self._getInactivePanel()
+        stack = self._left_stack if other is self._left_panel else self._right_stack
+        viewer = self._left_quick_view if other is self._left_panel else self._right_quick_view
+        stack.setCurrentWidget(viewer)
+        self._refreshQuickView(self._active_panel)
+        self._showStatus("Quick view on. Ctrl+Q hides it.")
+
+    # --------------------------------------------------------
+    # Method: _refreshQuickView
+    # Purpose: If the other panel is showing quick view, update
+    #          it to the source panel's selected file.
+    # --------------------------------------------------------
+    def _refreshQuickView(self, source_panel):
+        if source_panel is self._left_panel:
+            viewer = self._right_quick_view
+            stack = self._right_stack
+        else:
+            viewer = self._left_quick_view
+            stack = self._left_stack
+        if stack.currentWidget() is not viewer:
+            return
+        entry = source_panel.primaryFileEntry()
+        if entry is None:
+            viewer.clear("Select a file to preview.")
+            return
+        viewer.showPath(entry["full_path"])
+
+    # --------------------------------------------------------
     # Navigation
     # --------------------------------------------------------
     def _onBackspace(self):
@@ -1754,6 +1875,10 @@ class FileManagerApp(QMainWindow):
             from scan_cache import setScanCacheEnabled
 
             setScanCacheEnabled(bool(values["cache_recursive_scans"]))
+
+        auto_refresh = bool(self._settings.getSetting("auto_refresh_panels", True))
+        self._left_panel.setAutoRefreshEnabled(auto_refresh)
+        self._right_panel.setAutoRefreshEnabled(auto_refresh)
 
         app = QApplication.instance()
         applyTheme(
@@ -2227,6 +2352,18 @@ class FileManagerApp(QMainWindow):
             open_action = menu.addAction(open_label)
             open_action.setToolTip(open_tip)
             open_action.triggered.connect(lambda: self._onContextOpen(entry))
+
+            if not entry["is_dir"]:
+                view_action = menu.addAction("View\tF3")
+                view_action.setToolTip(
+                    "View\n\nOpen this file in the built-in viewer. Shortcut: F3."
+                )
+                view_action.triggered.connect(self._onViewFile)
+                edit_action = menu.addAction("Edit\tF4")
+                edit_action.setToolTip(
+                    "Edit\n\nOpen this file in the system editor. Shortcut: F4."
+                )
+                edit_action.triggered.connect(self._onEditFile)
 
             reveal_action = menu.addAction("Open in File Explorer")
             reveal_action.setToolTip(

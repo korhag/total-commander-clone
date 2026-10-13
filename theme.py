@@ -109,6 +109,8 @@ def getUiMetrics(font_size_pt, ui_scale_percent=DEFAULT_UI_SCALE_PERCENT):
         "nav_button_width": px(28, 22),
         "table_row_height": px(20, 16),
         "table_icon_size": px(16, 12),
+        "thumbnail_size": px(48, 32),
+        "thumbnail_row_height": px(54, 36),
         "toolbar_icon": px(16, 14),
         "bottom_bar_height": px(26, 22),
         "center_panel_width": px(40, 36),
@@ -809,6 +811,25 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         border-color: {c['active_border']};
         background-color: {accent_18};
     }}
+    QPushButton#thumbnailButton {{
+        color: {c['text']};
+        background-color: {c['button']};
+        border: 2px solid {c['border']};
+        border-radius: {m['radius']}px;
+        font-weight: bold;
+        padding: {m['nav_line_pad_v']}px {m['nav_line_pad_h']}px;
+        min-height: {m['nav_bar_height']}px;
+        max-height: {m['nav_bar_height']}px;
+        min-width: 0;
+    }}
+    QPushButton#thumbnailButton:hover {{
+        background-color: {c['button_hover']};
+        border-color: {c['active_border']};
+    }}
+    QPushButton#thumbnailButton:checked {{
+        background-color: {c['selection']};
+        border: 2px solid {c['active_border']};
+    }}
     QPushButton#filterRefreshButton {{
         color: {c['text']};
         background-color: {accent_14};
@@ -1033,6 +1054,13 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     QLabel {{
         color: {c['text']};
         background: transparent;
+    }}
+    QPlainTextEdit#viewerText {{
+        background-color: {c['base']};
+        color: {c['text']};
+        selection-background-color: {c['active_border']};
+        selection-color: {c['crust']};
+        font-family: Consolas, "Cascadia Mono", monospace;
     }}
     QLabel#panelLabel {{
         color: {c['subtext0']};
