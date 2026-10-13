@@ -70,6 +70,28 @@ class TestBatchRenamePaths(unittest.TestCase):
         self.assertIn("Invalid regex", dialog._summary_label.text())
         self.assertFalse(dialog._btn_apply.isEnabled())
 
+    def test_preview_matches_apply_when_names_collide(self):
+        entries = []
+        for name in ("a.txt", "b.txt"):
+            path = os.path.join(self.root, name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(name)
+            entries.append({"name": name, "full_path": path, "is_dir": False})
+        dialog = BatchRenameDialog(entries, self.root)
+        dialog._chk_regex.setChecked(True)
+        dialog._find_edit.setText("^[ab]$")
+        dialog._replace_edit.setText("same")
+
+        preview = [dialog._preview_table.item(row, 1).text() for row in range(2)]
+        self.assertEqual(preview, ["same.txt", "same (1).txt"])
+
+        with mock.patch("batch_rename_dialog.QMessageBox.information"):
+            dialog._onApply()
+
+        self.assertEqual(sorted(os.listdir(self.root)), sorted(preview))
+        with open(os.path.join(self.root, "same (1).txt"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "b.txt")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -416,6 +416,7 @@ class FileSystemModel(QAbstractTableModel):
         self._date_modified_format_key = DEFAULT_DATE_MODIFIED_FORMAT
         self._quiet_scan = False
         self._listing_from_cache = False
+        self._load_error = ""
 
     # --------------------------------------------------------
     # Method: showHiddenFiles
@@ -425,6 +426,10 @@ class FileSystemModel(QAbstractTableModel):
 
     def listingFromCache(self):
         return bool(self._listing_from_cache)
+
+    def loadError(self):
+        """Reason the last flat listing failed, or "" when it succeeded."""
+        return self._load_error
 
     def quietScanPending(self):
         return bool(self._quiet_scan)
@@ -652,6 +657,7 @@ class FileSystemModel(QAbstractTableModel):
         self.recursiveScanAbortRequested.emit()
         self._quiet_scan = False
         self._listing_from_cache = False
+        self._load_error = ""
 
         if not self._recursive:
             self._loadDirectoryFlatSync(path)
@@ -697,7 +703,8 @@ class FileSystemModel(QAbstractTableModel):
     def _loadDirectoryFlat(self, path):
         try:
             items = os.listdir(path)
-        except (PermissionError, OSError):
+        except OSError as exc:
+            self._load_error = exc.strerror or str(exc)
             return
 
         for name in items:
@@ -746,13 +753,41 @@ class FileSystemModel(QAbstractTableModel):
     def renameEntry(self, row, new_name):
         if 0 <= row < len(self._entries):
             entry = self._entries[row]
+            old_path = entry.get("full_path") or ""
             new_path = path_under_root(self._current_path, new_name)
             entry["name"] = new_name
             entry["full_path"] = new_path
             entry["type"] = getFileTypeDescription(new_path, entry["is_dir"])
-            idx_start = self.index(row, 0)
-            idx_end = self.index(row, len(self.COLUMNS) - 1)
+            first_row, last_row = row, row
+            if entry["is_dir"] and self._recursive and old_path:
+                if self._renameDescendants(old_path, new_path):
+                    first_row, last_row = 0, len(self._entries) - 1
+            idx_start = self.index(first_row, 0)
+            idx_end = self.index(last_row, len(self.COLUMNS) - 1)
             self.dataChanged.emit(idx_start, idx_end)
+            self._syncScanCacheAfterMutation()
+
+    # --------------------------------------------------------
+    # Method: _renameDescendants
+    # Purpose: In Subfolders mode, point rows under a renamed
+    #          folder at the new folder path.
+    # Output: bool - True when any row changed.
+    # --------------------------------------------------------
+    def _renameDescendants(self, old_dir, new_dir):
+        prefix = os.path.normcase(os.path.normpath(old_dir)) + os.sep
+        changed = False
+        for entry in self._entries:
+            full = os.path.normpath(entry.get("full_path") or "")
+            if not os.path.normcase(full).startswith(prefix):
+                continue
+            moved = os.path.join(new_dir, full[len(prefix):])
+            entry["full_path"] = moved
+            try:
+                entry["name"] = os.path.relpath(moved, self._current_path)
+            except ValueError:
+                entry["name"] = os.path.basename(moved)
+            changed = True
+        return changed
 
     # --------------------------------------------------------
     # Qt Model Interface
@@ -970,14 +1005,16 @@ class FileSortFilterProxy(QSortFilterProxyModel):
         ):
             return False
 
-        include_terms = parse_filter_terms(self._filter_text)
-        if include_terms:
-            if self._filter_mode == "regex" and len(include_terms) == 1:
+        if self._filter_mode == "regex":
+            # One pattern: splitting on spaces/commas would break e.g. "a{1,3}".
+            if self._filter_text.strip():
                 if self._regex_invalid or self._regex_obj is None:
                     return False
                 if self._regex_obj.search(name) is None:
                     return False
-            elif not match_include_terms(
+        else:
+            include_terms = parse_filter_terms(self._filter_text)
+            if include_terms and not match_include_terms(
                 name,
                 include_terms,
                 self._filter_mode,
@@ -1402,7 +1439,6 @@ class FilePanel(QWidget):
     folderCreated = pyqtSignal(str)
     fileDoubleClicked = pyqtSignal(dict)
     selectionChanged = pyqtSignal()
-    compareRequested = pyqtSignal()
     filesDropped = pyqtSignal(list, str, bool)
     activated = pyqtSignal()
     dateModifiedFormatChanged = pyqtSignal(str)
@@ -2296,9 +2332,10 @@ class FilePanel(QWidget):
     # Purpose: Loads a directory and pushes it to the history.
     # --------------------------------------------------------
     def navigateTo(self, path, add_to_history=True):
+        """Returns True when the folder was opened."""
         path = os.path.normpath(path)
         if not os.path.isdir(path):
-            return
+            return False
 
         if self.isRenaming():
             self._commitRename()
@@ -2317,15 +2354,18 @@ class FilePanel(QWidget):
         self._syncDriveCombo(path)
         self.pathChanged.emit(path)
         QTimer.singleShot(0, self._scrollFileTableToTop)
+        return True
 
     # --------------------------------------------------------
     # Method: refresh
     # Purpose: Reloads the current directory. force_rescan skips
     #          the recursive scan cache (used by F5 / banner Refresh).
+    #          Rows selected before the reload stay selected.
     # --------------------------------------------------------
     def refresh(self, force_rescan=True):
         current = self._source_model.currentPath()
         if current:
+            selected = self.selectedPaths()
             # Invalidate cache when the user explicitly forces a rescan.
             if force_rescan and self._source_model.isRecursive():
                 try:
@@ -2337,7 +2377,30 @@ class FilePanel(QWidget):
                 except Exception:
                     pass
             self._source_model.loadDirectory(current, force_rescan=force_rescan)
+            self._reselectPaths(selected)
             self._updateStatusLabel()
+
+    # --------------------------------------------------------
+    # Method: _reselectPaths
+    # Purpose: Select the visible rows whose full_path is in paths.
+    # --------------------------------------------------------
+    def _reselectPaths(self, paths):
+        if not paths:
+            return
+        wanted = {os.path.normcase(os.path.normpath(p)) for p in paths}
+        selection = QItemSelection()
+        for row in range(self._source_model.rowCount()):
+            entry = self._source_model.entryAt(row)
+            if not entry or os.path.normcase(os.path.normpath(entry["full_path"])) not in wanted:
+                continue
+            proxy_index = self._proxy_model.mapFromSource(self._source_model.index(row, 0))
+            if proxy_index.isValid():
+                selection.select(proxy_index, proxy_index)
+        if not selection.isEmpty():
+            self._table.selectionModel().select(
+                selection,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
 
     # --------------------------------------------------------
     # Method: applyTransferResult
@@ -2554,14 +2617,25 @@ class FilePanel(QWidget):
     # Navigation Methods
     # --------------------------------------------------------
     def goBack(self):
-        if self._history_index > 0:
-            self._history_index -= 1
-            self.navigateTo(self._history[self._history_index], add_to_history=False)
+        self._stepHistory(-1)
 
     def goForward(self):
-        if self._history_index < len(self._history) - 1:
-            self._history_index += 1
-            self.navigateTo(self._history[self._history_index], add_to_history=False)
+        self._stepHistory(1)
+
+    # --------------------------------------------------------
+    # Method: _stepHistory
+    # Purpose: Move back (-1) or forward (1) to the nearest history
+    #          entry that still opens. The index only changes on a
+    #          successful load, so it always matches the listing.
+    # --------------------------------------------------------
+    def _stepHistory(self, step):
+        index = self._history_index + step
+        while 0 <= index < len(self._history):
+            if self.navigateTo(self._history[index], add_to_history=False):
+                self._history_index = index
+                self._updateNavButtons()
+                return
+            index += step
 
     def goUp(self):
         current = self._source_model.currentPath()
@@ -3411,6 +3485,10 @@ class FilePanel(QWidget):
                 text += "  \u00b7  Subfolders (updating\u2026)"
             else:
                 text += "  \u00b7  Subfolders scan"
+        load_error = self._source_model.loadError()
+        if load_error:
+            text = f"\u26A0 Cannot read folder: {load_error}"
+            filter_warning = True
         self._status_label.setText(text)
         _setDynamicProperty(self._status_label, "filterWarning", filter_warning)
 

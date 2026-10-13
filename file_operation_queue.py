@@ -162,6 +162,21 @@ class FileOperationQueue(QObject):
         if task.status == STATUS_RUNNING and self._worker:
             self._worker.cancel()
 
+    def shutdown(self, timeout_ms):
+        """Cancel pending and running work before the app exits.
+
+        Returns True when no worker is left running after timeout_ms.
+        """
+        for task in self._tasks:
+            if task.status == STATUS_PENDING:
+                task.status = STATUS_CANCELLED
+                task.message = "Cancelled."
+        worker = self._worker
+        if worker is None:
+            return True
+        worker.cancel()
+        return worker.wait(timeout_ms)
+
     def clearCompleted(self):
         """Remove finished tasks from the list."""
         self._tasks = [

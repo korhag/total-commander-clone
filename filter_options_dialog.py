@@ -239,8 +239,15 @@ class FilterOptionsDialog(QDialog):
         self._preset_combo.blockSignals(False)
 
     def _load_from_panel(self):
-        fp = self._file_panel
-        st = fp.getFilterState()
+        self._applyFilterState(self._file_panel.getFilterState())
+
+    # --------------------------------------------------------
+    # Method: _applyFilterState
+    # Purpose: Fill every widget from a saved filter state (panel
+    #          or preset). Missing values reset to defaults so no
+    #          control keeps a stale value from a previous load.
+    # --------------------------------------------------------
+    def _applyFilterState(self, st):
         self._filter_text.setText(st.get("filter_text") or "")
         self._filter_exclude.setText(st.get("filter_exclude_text") or "")
         self._filter_extensions.setText(st.get("filter_extensions") or "")
@@ -261,18 +268,14 @@ class FilterOptionsDialog(QDialog):
         self._spin_min_mb.setValue(_bytes_to_mb(spec.size_min))
         self._spin_max_mb.setValue(_bytes_to_mb(spec.size_max))
         self._chk_date.setChecked(spec.date_enabled)
-        if spec.date_after is not None:
-            dta = _ts_to_qdt(spec.date_after)
-            if dta is not None:
-                self._dt_after.setDateTime(dta)
-        else:
-            self._dt_after.setDateTime(QDateTime.currentDateTime().addYears(-10))
-        if spec.date_before is not None:
-            dtb = _ts_to_qdt(spec.date_before)
-            if dtb is not None:
-                self._dt_before.setDateTime(dtb)
-        else:
-            self._dt_before.setDateTime(QDateTime.currentDateTime().addYears(10))
+        dta = _ts_to_qdt(spec.date_after)
+        if dta is None:
+            dta = QDateTime.currentDateTime().addYears(-10)
+        self._dt_after.setDateTime(dta)
+        dtb = _ts_to_qdt(spec.date_before)
+        if dtb is None:
+            dtb = QDateTime.currentDateTime().addYears(10)
+        self._dt_before.setDateTime(dtb)
         self._rb_and.setChecked(spec.combine_and)
         self._rb_or.setChecked(not spec.combine_and)
 
@@ -361,35 +364,7 @@ class FilterOptionsDialog(QDialog):
         pl = payload.get("payload")
         if not isinstance(pl, dict):
             return
-        self._filter_text.setText(pl.get("filter_text") or "")
-        self._filter_exclude.setText(pl.get("filter_exclude_text") or "")
-        self._filter_extensions.setText(pl.get("filter_extensions") or "")
-        self._rb_words_and.setChecked(bool(pl.get("filter_words_combine_and", True)))
-        self._rb_words_or.setChecked(not bool(pl.get("filter_words_combine_and", True)))
-        mode = pl.get("filter_mode", "contains")
-        self._rb_contains.setChecked(mode == "contains")
-        self._rb_wildcard.setChecked(mode == "wildcard")
-        self._rb_regex.setChecked(mode == "regex")
-        kind = pl.get("filter_kind", "all")
-        self._rb_kind_all.setChecked(kind == "all")
-        self._rb_kind_dirs.setChecked(kind == "dirs")
-        self._rb_kind_files.setChecked(kind == "files")
-        self._chk_subfolders.setChecked(bool(pl.get("filter_include_subfolders")))
-        spec = FilterSpec.from_dict(pl.get("filter_advanced"))
-        self._chk_size.setChecked(spec.size_enabled)
-        self._spin_min_mb.setValue(_bytes_to_mb(spec.size_min))
-        self._spin_max_mb.setValue(_bytes_to_mb(spec.size_max))
-        self._chk_date.setChecked(spec.date_enabled)
-        if spec.date_after is not None:
-            dta = _ts_to_qdt(spec.date_after)
-            if dta is not None:
-                self._dt_after.setDateTime(dta)
-        if spec.date_before is not None:
-            dtb = _ts_to_qdt(spec.date_before)
-            if dtb is not None:
-                self._dt_before.setDateTime(dtb)
-        self._rb_and.setChecked(spec.combine_and)
-        self._rb_or.setChecked(not spec.combine_and)
+        self._applyFilterState(pl)
 
     def _onPresetSave(self):
         name, ok = QInputDialog.getText(self, "Save filter", "Preset name:")

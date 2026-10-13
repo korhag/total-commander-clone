@@ -9,8 +9,8 @@ import ctypes
 import traceback
 from datetime import datetime
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtCore import Qt, QThread
 from PyQt5.QtGui import QIcon, QPalette
 
 from file_manager_app import FileManagerApp
@@ -81,14 +81,47 @@ def appendDiagnosticLog(filename, message):
 
 
 # ------------------------------------------------------------
+# Function: showUnhandledErrorDialog
+# Purpose: Tell the user that an action failed instead of letting
+#          it fail silently. Only runs on the GUI thread (worker
+#          threads must not create widgets) and never nests a
+#          second dialog while one is already open.
+# ------------------------------------------------------------
+_error_dialog_open = False
+
+
+def showUnhandledErrorDialog(exc_type, exc):
+    global _error_dialog_open
+    app = QApplication.instance()
+    if app is None or _error_dialog_open:
+        return
+    if QThread.currentThread() is not app.thread():
+        return
+    _error_dialog_open = True
+    try:
+        log_path = os.path.join(getConfigPath(), "crash.log")
+        QMessageBox.critical(
+            None,
+            "Unexpected error",
+            f"The action could not be completed.\n\n"
+            f"{exc_type.__name__}: {exc}\n\n"
+            f"Details were saved to:\n{log_path}",
+        )
+    finally:
+        _error_dialog_open = False
+
+
+# ------------------------------------------------------------
 # Function: installCrashLogging
 # Purpose: Log unhandled exceptions to %APPDATA%\TotalCommanderClone\crash.log
+#          and surface them to the user when they happen in the UI.
 # ------------------------------------------------------------
 def installCrashLogging():
     def _excepthook(exc_type, exc, tb):
         text = "".join(traceback.format_exception(exc_type, exc, tb))
         appendDiagnosticLog("crash.log", f"Unhandled exception:\n{text}")
         sys.__excepthook__(exc_type, exc, tb)
+        showUnhandledErrorDialog(exc_type, exc)
 
     sys.excepthook = _excepthook
 

@@ -46,6 +46,13 @@ from git_credentials_dialog import GitCredentialsDialog
 
 
 # ------------------------------------------------------------
+# Shutdown waits (milliseconds) for background work on close.
+# ------------------------------------------------------------
+TRANSFER_SHUTDOWN_WAIT_MS = 10000
+UPDATE_CHECK_SHUTDOWN_WAIT_MS = 5000
+
+
+# ------------------------------------------------------------
 # Class: UpdateCheckWorker
 # Purpose: Background Git fetch + APP_VERSION compare (no UI).
 # ------------------------------------------------------------
@@ -676,7 +683,7 @@ class FileManagerApp(QMainWindow):
         return True
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Wheel:
+        if event.type() == QEvent.Wheel and self._wheelTargetsMainWindow(obj):
             mods = QApplication.keyboardModifiers()
             if mods & Qt.ControlModifier:
                 delta = event.angleDelta().y()
@@ -689,7 +696,16 @@ class FileManagerApp(QMainWindow):
         return super().eventFilter(obj, event)
 
     # --------------------------------------------------------
-    # Method: _initPanels
+    # Method: _wheelTargetsMainWindow
+    # Purpose: Ctrl+wheel density zoom applies only to widgets in
+    #          this window, never inside dialogs or popups.
+    # --------------------------------------------------------
+    def _wheelTargetsMainWindow(self, obj):
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if not isinstance(obj, QWidget):
+            return False
+        return obj.window() is self
     # Purpose: Creates the layout: bookmarks pane | dual file panes
     #          with a center column of Copy/Move/Swap/Mirror buttons.
     #          Each panel slot is a QStackedWidget that can toggle
@@ -799,12 +815,6 @@ class FileManagerApp(QMainWindow):
 
         self._left_panel.selectionChanged.connect(self._updateStatusBar)
         self._right_panel.selectionChanged.connect(self._updateStatusBar)
-        self._left_panel.compareRequested.connect(
-            lambda: self._onCompareWithOtherPanel(self._left_panel)
-        )
-        self._right_panel.compareRequested.connect(
-            lambda: self._onCompareWithOtherPanel(self._right_panel)
-        )
 
         self._left_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
         self._right_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
@@ -1038,6 +1048,10 @@ class FileManagerApp(QMainWindow):
     def _clearClipboard(self):
         self._clipboard_paths = []
         self._clipboard_mode = None
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime is not None and mime.hasUrls():
+            clipboard.clear()
 
     # --------------------------------------------------------
     # Method: _initBottomBar
@@ -1148,6 +1162,20 @@ class FileManagerApp(QMainWindow):
             self.addAction(action)
 
     # --------------------------------------------------------
+    # Method: _panelMovedSinceStartup
+    # Purpose: True when the user opened another folder in this
+    #          panel before the deferred state restore ran.
+    # --------------------------------------------------------
+    @staticmethod
+    def _panelMovedSinceStartup(panel, home):
+        current = panel.currentPath()
+        if not current:
+            return False
+        return os.path.normcase(os.path.normpath(current)) != os.path.normcase(
+            os.path.normpath(home)
+        )
+
+    # --------------------------------------------------------
     # Method: _restoreState
     # Purpose: Loads saved panel paths from state.json and
     #          navigates both panels to their last location.
@@ -1168,15 +1196,18 @@ class FileManagerApp(QMainWindow):
         if not os.path.isdir(right_path):
             right_path = home
 
-        self._left_panel.restoreHistoryData(left_state)
-        self._right_panel.restoreHistoryData(right_state)
-
         # Home is shown before this runs, so currentPath() is already set.
-        # Apply defaults when the saved folder is missing, not only when empty.
-        if not saved_left or not os.path.isdir(saved_left):
-            self._left_panel.navigateTo(left_path)
-        if not saved_right or not os.path.isdir(saved_right):
-            self._right_panel.navigateTo(right_path)
+        # A panel the user already navigated away from home keeps that folder.
+        # Otherwise apply defaults when the saved folder is missing, not only when empty.
+        for panel, state, saved, fallback in (
+            (self._left_panel, left_state, saved_left, left_path),
+            (self._right_panel, right_state, saved_right, right_path),
+        ):
+            if self._panelMovedSinceStartup(panel, home):
+                continue
+            panel.restoreHistoryData(state)
+            if not saved or not os.path.isdir(saved):
+                panel.navigateTo(fallback)
 
         fallback_widths = self._settings.getSetting("column_widths", {})
         if fallback_widths and not left_state.get("column_widths"):
@@ -1232,6 +1263,21 @@ class FileManagerApp(QMainWindow):
         return self._left_panel
 
     # --------------------------------------------------------
+    # Method: _activePanelReady
+    # Purpose: True when the active file panel is on screen. While
+    #          the library browser covers it, file actions would hit
+    #          a hidden selection, so they are refused instead.
+    # --------------------------------------------------------
+    def _activePanelReady(self):
+        if not self._active_panel:
+            return False
+        stack = self._left_stack if self._active_panel == self._left_panel else self._right_stack
+        if stack.currentWidget() is not self._active_panel:
+            self._showStatus("Switch back to the file panel to work with files.")
+            return False
+        return True
+
+    # --------------------------------------------------------
     # Swap pane paths: left <-> right
     # --------------------------------------------------------
     def _onSwapPanels(self):
@@ -1247,7 +1293,7 @@ class FileManagerApp(QMainWindow):
     # File Operation Handlers
     # --------------------------------------------------------
     def _onCopyToOther(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         paths = self._active_panel.selectedPaths()
         if not paths:
@@ -1262,7 +1308,7 @@ class FileManagerApp(QMainWindow):
         self._showStatus(f"Copy queued ({len(paths)} item(s)).")
 
     def _onMoveToOther(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         paths = self._active_panel.selectedPaths()
         if not paths:
@@ -1281,7 +1327,7 @@ class FileManagerApp(QMainWindow):
     # --------------------------------------------------------
     def _prepareStructureTransfer(self, verb):
         """Return (paths, rels, dest) or (None, None, None) after UI feedback."""
-        if not self._active_panel:
+        if not self._activePanelReady():
             return None, None, None
         specs, err = self._active_panel.selectedTransferSpecs()
         if err or not specs:
@@ -1419,7 +1465,7 @@ class FileManagerApp(QMainWindow):
         dlg.exec_()
 
     def _onDelete(self):
-        if not self._active_panel or self._active_panel.isRenaming():
+        if not self._activePanelReady() or self._active_panel.isRenaming():
             return
         paths = self._active_panel.selectedPaths()
         if not paths:
@@ -1446,7 +1492,7 @@ class FileManagerApp(QMainWindow):
         self._showStatus(f"Delete queued ({len(paths)} item(s)).")
 
     def _onRename(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         if self._active_panel.isRenaming():
             return
@@ -1456,7 +1502,7 @@ class FileManagerApp(QMainWindow):
         self._showStatus(f"Created folder: {folder_name}")
 
     def _onNewFolder(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         self._active_panel.createNewFolder()
 
@@ -1466,7 +1512,7 @@ class FileManagerApp(QMainWindow):
     # Otherwise operates on the rows currently visible in the panel.
     # --------------------------------------------------------
     def _onBatchRename(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         current_dir = self._active_panel.currentPath()
         if not current_dir:
@@ -1532,7 +1578,7 @@ class FileManagerApp(QMainWindow):
     # Navigation
     # --------------------------------------------------------
     def _onBackspace(self):
-        if not self._active_panel or self._active_panel.isRenaming():
+        if not self._activePanelReady() or self._active_panel.isRenaming():
             return
         self._active_panel.goUp()
 
@@ -1553,7 +1599,7 @@ class FileManagerApp(QMainWindow):
     # Clipboard Operations
     # --------------------------------------------------------
     def _onCut(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         self._clipboard_paths = self._active_panel.selectedPaths()
         self._clipboard_mode = "cut"
@@ -1562,7 +1608,7 @@ class FileManagerApp(QMainWindow):
             self._showStatus(f"Cut {len(self._clipboard_paths)} item(s)")
 
     def _onCopyToClipboard(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
         self._clipboard_paths = self._active_panel.selectedPaths()
         self._clipboard_mode = "copy"
@@ -1608,7 +1654,7 @@ class FileManagerApp(QMainWindow):
         return bool(paths)
 
     def _onPaste(self):
-        if not self._active_panel:
+        if not self._activePanelReady():
             return
 
         dest = self._active_panel.currentPath()
@@ -1630,6 +1676,7 @@ class FileManagerApp(QMainWindow):
                 self._showStatus(f"Copy queued ({len(os_paths)} item(s)).")
             return
 
+        self._clipboard_paths = [p for p in self._clipboard_paths if os.path.exists(p)]
         if not self._clipboard_paths:
             self._showStatus("Nothing to paste.")
             return
@@ -1689,9 +1736,10 @@ class FileManagerApp(QMainWindow):
             self._settings.setSetting(key, value)
 
         self._applySettingsValues(values)
-        self._settings.saveSettings()
+        saved = self._settings.saveSettings()
         self._updateMirrorTooltips()
-        self._showStatus("Settings saved.")
+        if self._warnIfSaveFailed(saved):
+            self._showStatus("Settings saved.")
 
     # --------------------------------------------------------
     # Method: _applySettingsValues
@@ -2187,7 +2235,7 @@ class FileManagerApp(QMainWindow):
                 "(selects the file or folder in Explorer)."
             )
             reveal_action.triggered.connect(
-                lambda e=entry: self._onRevealInFileExplorer(e)
+                lambda: self._onRevealInFileExplorer(entry)
             )
 
             terminal_action = menu.addAction("Open Folder in Terminal")
@@ -2197,7 +2245,7 @@ class FileManagerApp(QMainWindow):
                 "that contains this item (or in the folder itself)."
             )
             terminal_action.triggered.connect(
-                lambda e=entry: self._onOpenFolderInTerminal(e)
+                lambda: self._onOpenFolderInTerminal(entry)
             )
 
         if file_entries:
@@ -2213,7 +2261,7 @@ class FileManagerApp(QMainWindow):
                 )
             open_with_action.setToolTip(open_with_tip)
             open_with_action.triggered.connect(
-                lambda fe=list(file_entries): self._onOpenWith(fe)
+                lambda: self._onOpenWith(file_entries)
             )
 
         if single_selection or file_entries:
@@ -2390,10 +2438,7 @@ class FileManagerApp(QMainWindow):
             system = platform.system()
             if system == "Windows":
                 # /select, highlights the item; works for files and folders.
-                subprocess.Popen(
-                    f'explorer /select,"{path}"',
-                    shell=True,
-                )
+                subprocess.Popen(["explorer", "/select,", path])
             elif system == "Darwin":
                 subprocess.Popen(["open", "-R", path])
             else:
@@ -2707,6 +2752,14 @@ class FileManagerApp(QMainWindow):
             return
 
         preview = getPublishPreview(repo_root, local_v, remote_v)
+        if preview.get("can_publish") and preview.get("dirty") is None:
+            QMessageBox.warning(
+                self,
+                "Publish Version to GitHub",
+                "Could not read git status for this project, so it is unclear "
+                "what would be committed. Publish was not started.",
+            )
+            return
         dirty_line = (
             "Uncommitted changes will be committed as "
             f"\"release: v{local_v}\"."
@@ -2864,9 +2917,53 @@ class FileManagerApp(QMainWindow):
             self._status_info.setText("Ready")
 
     # --------------------------------------------------------
+    # Method: _stopTransfersForClose
+    # Purpose: Ask before closing with transfers still queued or
+    #          running, then cancel them. Returns False when the
+    #          window should stay open.
+    # --------------------------------------------------------
+    def _stopTransfersForClose(self):
+        if not self._transfer_queue.hasActiveWork():
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Transfers in progress",
+            "File transfers are still running.\n\nCancel them and exit?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+        if self._transfer_queue.shutdown(TRANSFER_SHUTDOWN_WAIT_MS):
+            return True
+        self._showStatus("Still stopping the current transfer. Try closing again in a moment.")
+        return False
+
+    # --------------------------------------------------------
+    # Method: _detachUpdateCheckWorker
+    # Purpose: Stop a running update check from showing UI on a
+    #          closing window, and give it a moment to finish.
+    # --------------------------------------------------------
+    def _detachUpdateCheckWorker(self):
+        worker = self._update_check_worker
+        if worker is None:
+            return
+        try:
+            worker.resultReady.disconnect(self._onUpdateCheckResult)
+        except TypeError:
+            pass
+        if worker.isRunning():
+            worker.wait(UPDATE_CHECK_SHUTDOWN_WAIT_MS)
+
+    # --------------------------------------------------------
     # Window Close: Save State
     # --------------------------------------------------------
     def closeEvent(self, event):
+        if not self._stopTransfersForClose():
+            event.ignore()
+            return
+        self._detachUpdateCheckWorker()
+
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -2893,5 +2990,22 @@ class FileManagerApp(QMainWindow):
             "current_tab": current_tab,
         })
 
-        self._settings.saveAll()
+        self._warnIfSaveFailed(self._settings.saveAll())
         event.accept()
+
+    # --------------------------------------------------------
+    # Method: _warnIfSaveFailed
+    # Purpose: Tell the user when settings could not be written
+    #          (disk full, permissions) instead of failing silently.
+    # Output: bool - the saved flag passed in.
+    # --------------------------------------------------------
+    def _warnIfSaveFailed(self, saved):
+        if not saved:
+            config_dir = os.path.dirname(getattr(self._settings, "_settings_path", "") or "")
+            QMessageBox.warning(
+                self,
+                "Settings not saved",
+                "Your settings could not be written to disk.\n\n"
+                f"Check free space and permissions for:\n{config_dir}",
+            )
+        return saved

@@ -133,14 +133,35 @@ def getComputerBackupDir(
 # Purpose: Write pretty JSON; replace previous file in place (latest only).
 # ------------------------------------------------------------
 def _writeJson(path: str, data: Any) -> None:
+    os.replace(_writeTempJson(path, data), path)
+
+
+# ------------------------------------------------------------
+# Function: _writeTempJson
+# Purpose: Write pretty JSON next to path as path.tmp and return
+#          the temp path; the caller moves it into place.
+# ------------------------------------------------------------
+def _writeTempJson(path: str, data: Any) -> str:
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            f.write("\n")
+    except BaseException:
+        _removeQuietly(tmp)
+        raise
+    return tmp
+
+
+def _removeQuietly(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 # ------------------------------------------------------------
@@ -242,8 +263,19 @@ def writeConfigBackup(
         },
     }
 
-    for filename, data in payload.items():
-        _writeJson(os.path.join(backup_dir, filename), data)
+    # Write every file to a temp name first; only when all succeed are
+    # they moved into place, so a failure never leaves a mixed backup.
+    staged = []
+    try:
+        for filename, data in payload.items():
+            target = os.path.join(backup_dir, filename)
+            staged.append((_writeTempJson(target, data), target))
+    except BaseException:
+        for tmp, _target in staged:
+            _removeQuietly(tmp)
+        raise
+    for tmp, target in staged:
+        os.replace(tmp, target)
 
     manifest = {
         "computer_name": host,
@@ -299,8 +331,13 @@ def _hiddenSubprocessKwargs() -> Dict[str, Any]:
 # ------------------------------------------------------------
 # Function: _runGit
 # Purpose: Run a git command in repo_root; return (ok, combined output).
+# Input:  extra_env (dict|None) - added to the inherited environment.
 # ------------------------------------------------------------
-def _runGit(repo_root: str, args, timeout: int = 60):
+def _runGit(repo_root: str, args, timeout: int = 60, extra_env: Optional[Dict[str, str]] = None):
+    env = None
+    if extra_env:
+        env = dict(os.environ)
+        env.update(extra_env)
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -309,6 +346,7 @@ def _runGit(repo_root: str, args, timeout: int = 60):
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
             **_hiddenSubprocessKwargs(),
         )
         out = (completed.stdout or "") + (completed.stderr or "")
@@ -432,19 +470,12 @@ def saveGitAccountCredentials(
     if not pat:
         return True, "Saved profile (PAT unchanged)."
 
-    import tempfile
-
-    tmp_path = None
+    # The PAT goes to PowerShell on stdin: never on a command line or in a temp file.
     try:
-        fd, tmp_path = tempfile.mkstemp(prefix="tcc-pat-", suffix=".txt")
-        os.close(fd)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(pat)
-        tmp_ps = tmp_path.replace("'", "''")
         pat_ps = pat_path.replace("'", "''")
         ps = (
             "$ErrorActionPreference='Stop';"
-            f"$plain = (Get-Content -LiteralPath '{tmp_ps}' -Raw -Encoding UTF8).Trim();"
+            "$plain = [Console]::In.ReadToEnd().Trim();"
             "if (-not $plain) { throw 'Empty PAT' };"
             "$secure = ConvertTo-SecureString -String $plain -AsPlainText -Force;"
             "$enc = ConvertFrom-SecureString -SecureString $secure;"
@@ -460,6 +491,7 @@ def saveGitAccountCredentials(
                 "-Command",
                 ps,
             ],
+            input=pat,
             capture_output=True,
             text=True,
             timeout=30,
@@ -472,31 +504,31 @@ def saveGitAccountCredentials(
         return True, "Saved profile and encrypted PAT."
     except Exception as exc:
         return False, str(exc)
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
 
 
 # ------------------------------------------------------------
-# Function: _authExtraHeaderArgs
-# Purpose: git -c http.extraHeader=AUTHORIZATION… args, or [].
+# Function: _authGitEnv
+# Purpose: Environment that makes git send an AUTHORIZATION
+#          header, or {} without usable auth. Uses Git's
+#          GIT_CONFIG_COUNT/KEY/VALUE variables (Git 2.31+) so the
+#          token is never visible on the git command line.
 # ------------------------------------------------------------
-def _authExtraHeaderArgs(auth: Optional[Dict[str, Any]]):
+def _authGitEnv(auth: Optional[Dict[str, Any]]) -> Dict[str, str]:
     if not auth or not auth.get("pat"):
-        return []
+        return {}
     import base64
 
     user = (auth.get("username") or "").strip()
     pat = (auth.get("pat") or "").strip()
     if not user or not pat:
-        return []
+        return {}
     pair = f"{user}:{pat}"
-    encoded = base64.b64encode(pair.encode("ascii")).decode("ascii")
-    header = f"AUTHORIZATION: basic {encoded}"
-    return ["-c", f"http.extraHeader={header}"]
+    encoded = base64.b64encode(pair.encode("utf-8")).decode("ascii")
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {encoded}",
+    }
 
 
 # ------------------------------------------------------------
@@ -510,9 +542,9 @@ def runGitPushWithAuth(
 ) -> Tuple[bool, str]:
     push_args = ["push", "-u", "origin", "HEAD"]
     use_auth = auth if auth and auth.get("pat") else _loadSavedGitAuth(repo_root)
-    header_args = _authExtraHeaderArgs(use_auth)
-    if header_args:
-        ok, out = _runGit(repo_root, [*header_args, *push_args], timeout=120)
+    auth_env = _authGitEnv(use_auth)
+    if auth_env:
+        ok, out = _runGit(repo_root, push_args, timeout=120, extra_env=auth_env)
         if ok:
             return True, out
         # Fall through to plain push only when no explicit auth was given.

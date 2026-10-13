@@ -16,7 +16,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 from config_backup import (
-    _authExtraHeaderArgs,
+    _authGitEnv,
     _loadSavedGitAuth,
     _runGit,
     findGitRepoRoot,
@@ -273,20 +273,10 @@ def _fetchRemoteBranch(repo_root: str, remote: str, branch: str) -> Tuple[bool, 
 
     # Public HTTPS remotes normally succeed without auth. Retry with PAT only
     # when a saved account exists (e.g. private fork / rate limits).
-    auth = _loadSavedGitAuth(repo_root)
-    if not auth or not auth.get("pat"):
+    auth_env = _authGitEnv(_loadSavedGitAuth(repo_root))
+    if not auth_env:
         return False, out
-
-    import base64
-
-    pair = f"{auth['username']}:{auth['pat']}"
-    encoded = base64.b64encode(pair.encode("ascii")).decode("ascii")
-    header = f"AUTHORIZATION: basic {encoded}"
-    return _runGit(
-        repo_root,
-        ["-c", f"http.extraHeader={header}", "fetch", remote, branch],
-        timeout=90,
-    )
+    return _runGit(repo_root, ["fetch", remote, branch], timeout=90, extra_env=auth_env)
 
 
 # ------------------------------------------------------------
@@ -477,11 +467,12 @@ def getRemoteUrl(repo_root: str) -> str:
 # ------------------------------------------------------------
 # Function: getWorkingTreeDirty
 # Purpose: True when git status --porcelain has any output.
+#          None when git status itself failed (state unknown).
 # ------------------------------------------------------------
-def getWorkingTreeDirty(repo_root: str) -> bool:
+def getWorkingTreeDirty(repo_root: str) -> Optional[bool]:
     ok, status = _runGit(repo_root, ["status", "--porcelain"], timeout=30)
     if not ok:
-        return False
+        return None
     return bool((status or "").strip())
 
 
@@ -583,29 +574,21 @@ def publishLocalVersionToGitHub(
     branch = _currentBranch(repo_root)
 
     use_auth = auth if auth and auth.get("pat") else _loadSavedGitAuth(repo_root)
-    header_args = _authExtraHeaderArgs(use_auth)
+    auth_env = _authGitEnv(use_auth)
 
     # Prefer configuring remote URL when auth dialog supplied one.
     if auth and (auth.get("remote_url") or "").strip():
         url = (auth.get("remote_url") or "").strip()
         _runGit(repo_root, ["remote", "set-url", remote, url], timeout=15)
 
-    fetch_cmd = [*header_args, "fetch", remote, branch] if header_args else [
-        "fetch",
-        remote,
-        branch,
-    ]
-    ok, fetch_out = _runGit(repo_root, fetch_cmd, timeout=90)
-    if not ok and not header_args:
+    fetch_cmd = ["fetch", remote, branch]
+    ok, fetch_out = _runGit(repo_root, fetch_cmd, timeout=90, extra_env=auth_env)
+    if not ok and not auth_env:
         # Anonymous fetch failed — retry with saved PAT if any.
         saved = _loadSavedGitAuth(repo_root)
-        retry_headers = _authExtraHeaderArgs(saved)
-        if retry_headers:
-            ok, fetch_out = _runGit(
-                repo_root,
-                [*retry_headers, "fetch", remote, branch],
-                timeout=90,
-            )
+        retry_env = _authGitEnv(saved)
+        if retry_env:
+            ok, fetch_out = _runGit(repo_root, fetch_cmd, timeout=90, extra_env=retry_env)
             if ok:
                 use_auth = saved
     if not ok:
@@ -634,6 +617,8 @@ def publishLocalVersionToGitHub(
                 )
 
     dirty = getWorkingTreeDirty(repo_root)
+    if dirty is None:
+        return False, "Could not read git status. Publish aborted.", False
     if dirty:
         ok, add_out = _runGit(repo_root, ["add", "-A"], timeout=60)
         if not ok:

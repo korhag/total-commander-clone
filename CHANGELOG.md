@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.5.4] - 2026-10-13
+
+### Fixed
+
+- **File context menu**: **Open in File Explorer**, **Open Folder in Terminal** and **Open With...** did nothing when clicked. They now open the selected item.
+- **Silent failures**: If a button or menu action hits an unexpected error, a message now explains what went wrong and where the details were saved (`crash.log`). Previously the error was only written to the log.
+
+## [0.5.3] - 2026-10-13
+
+### Fixed
+
+- **Overwrite on copy or move**: The existing destination is kept until the new item is fully in place. If the copy or move fails or is cancelled, the original destination is restored instead of being lost.
+- **Move to another drive**: Cancelling after the copy finishes now leaves the source untouched. If the source cannot be removed afterwards, this is reported as an error and the complete copy is kept.
+- **Cancel during a name conflict**: Cancelling now stops a transfer that is waiting for a conflict answer.
+- **Case-only rename**: Renaming `File.txt` to `file.txt` is no longer refused as "already exists".
+- **Batch rename**: When two files would get the same name, the preview now shows the "(1)" name that is actually applied.
+- **Cut and paste**: After a successful cut and paste, the Windows clipboard no longer offers the moved files again. Pasting after a partly failed move skips items that were already moved. A cut that cannot mark the clipboard as "move" is no longer published as a copy.
+- **Library browser**: File actions (copy, move, delete, rename, new folder, cut, copy, paste) no longer act on the file panel hidden behind the library browser.
+- **Open in File Explorer**: Paths containing characters such as `&` or quotes now open correctly.
+- **Back and Forward**: Skip folders that no longer exist instead of getting out of step with the listing.
+- **Subfolders rename**: Renaming a folder in Subfolders mode updates the paths of everything listed under it.
+- **Unreadable folders**: A folder that cannot be read shows "Cannot read folder" in the status line instead of looking empty.
+- **Refresh**: Selected rows stay selected after a refresh.
+- **Regex filter**: The filter is matched as one pattern, so patterns with spaces or commas (such as `a{1,3}`) work.
+- **Filter presets**: Loading a preset without dates resets the date fields instead of keeping old values.
+- **Subfolder scan cache**: Changes inside subfolders are now detected, so returning to a folder no longer shows a stale listing.
+- **Cancelling a subfolder scan**: Stops promptly even inside a very large folder.
+- **Closing the app**: Asks before closing while transfers are running and cancels them cleanly. A running update check no longer shows dialogs after the window closes.
+- **Ctrl+mouse wheel**: Changes interface density only in the main window, not inside dialogs.
+- **Startup**: A folder opened before the saved session finishes loading is no longer replaced by the saved folder.
+- **Settings file**: A damaged `settings.json` is kept as `settings.json.corrupt` instead of being silently overwritten. Hand-edited values of the wrong type (for example `"false"` or `"10pt"`) fall back to working values.
+- **Saving settings**: A failed save (disk full, no permission) is reported instead of being ignored.
+- **Libraries and tags**: Changes are saved immediately, so they survive a crash.
+- **Profile import**: Imported bookmarks are cleaned up the same way as bookmarks loaded from disk.
+- **Publish to GitHub**: Publishing stops if Git status cannot be read, instead of assuming there are no changes.
+- **Local settings backup**: A failed backup no longer leaves a mix of old and new files.
+
+### Security
+
+- **GitHub token**: The saved token is passed to Git through environment variables instead of the command line (requires Git 2.31 or newer), and to PowerShell through standard input instead of a temporary file.
+
 ## [0.5.2] - 2026-10-12
 
 ### Added

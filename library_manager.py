@@ -162,6 +162,19 @@ class LibraryManager:
         return self._settings.getSavedLibraryFilters()
 
     # --------------------------------------------------------
+    # Method: _saveLibraries / _saveFolderTags
+    # Purpose: Store and write state.json right away so library
+    #          and tag edits survive a crash before a clean exit.
+    # --------------------------------------------------------
+    def _saveLibraries(self, libraries):
+        self._settings.setLibraries(libraries)
+        self._settings.saveState()
+
+    def _saveFolderTags(self, folder_tags):
+        self._settings.setFolderTags(folder_tags)
+        self._settings.saveState()
+
+    # --------------------------------------------------------
     # Method: registerLibraryRoot
     # Purpose: Create or extend a library with a root folder and
     #          write the hidden marker used for drive discovery.
@@ -197,7 +210,7 @@ class LibraryManager:
             if existing_path == root_path:
                 existing_root["is_available"] = True
                 existing_root["last_seen_path"] = root_path
-                self._settings.setLibraries(libraries)
+                self._saveLibraries(libraries)
                 self._writeMarker(root_path, library, existing_root)
                 return {
                     "library": library,
@@ -212,7 +225,7 @@ class LibraryManager:
             "is_available": True,
         }
         library.setdefault("roots", []).append(root)
-        self._settings.setLibraries(libraries)
+        self._saveLibraries(libraries)
         self._writeMarker(root_path, library, root)
         return {
             "library": library,
@@ -237,7 +250,7 @@ class LibraryManager:
                     root["path"] = resolved_path
                     root["last_seen_path"] = resolved_path
 
-        self._settings.setLibraries(libraries)
+        self._saveLibraries(libraries)
         self._refreshResolvedFolderPaths()
         return libraries
 
@@ -266,7 +279,7 @@ class LibraryManager:
         folder_tags = self.getFolderTags()
         if not cleaned_tags and not (note or "").strip():
             folder_tags.pop(key, None)
-            self._settings.setFolderTags(folder_tags)
+            self._saveFolderTags(folder_tags)
             return None
 
         folder_tags[key] = {
@@ -277,7 +290,7 @@ class LibraryManager:
             "tags": cleaned_tags,
             "note": (note or "").strip(),
         }
-        self._settings.setFolderTags(folder_tags)
+        self._saveFolderTags(folder_tags)
         return folder_tags[key]
 
     # --------------------------------------------------------
@@ -443,7 +456,7 @@ class LibraryManager:
                 resolved_path = normalizePath(os.path.join(root_path, rel_path))
             record["resolved_path"] = resolved_path
 
-        self._settings.setFolderTags(folder_tags)
+        self._saveFolderTags(folder_tags)
 
     # --------------------------------------------------------
     # Internal: discover roots by saved path and marker scans

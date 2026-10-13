@@ -186,9 +186,12 @@ class SettingsManager:
                 if not isinstance(data, dict):
                     raise json.JSONDecodeError("Expected a JSON object", "", 0)
                 merged = self._deepMerge(defaults, data)
-                return merged
+                return self._coerceToDefaultTypes(merged, defaults)
             except (json.JSONDecodeError, IOError, OSError, ValueError):
-                return copy.deepcopy(defaults)
+                self._quarantineCorruptFile(path)
+                data = copy.deepcopy(defaults)
+                self._writeJson(path, data)
+                return data
         else:
             data = copy.deepcopy(defaults)
             self._writeJson(path, data)
@@ -223,7 +226,7 @@ class SettingsManager:
                 raise json.JSONDecodeError("Expected a JSON object", "", 0)
             return self._deepMerge(DEFAULT_STATE, raw)
         except (json.JSONDecodeError, IOError, OSError, ValueError):
-            self._quarantineCorruptState(path)
+            self._quarantineCorruptFile(path)
             data = copy.deepcopy(DEFAULT_STATE)
             self._writeJson(path, data)
             return data
@@ -239,7 +242,7 @@ class SettingsManager:
         document = self._readBookmarkDocument(self._bookmarks_path)
         from_corrupt = False
         if document is not None and document.get("corrupt"):
-            self._quarantineCorruptState(self._bookmarks_path)
+            self._quarantineCorruptFile(self._bookmarks_path)
             document = None
             from_corrupt = True
 
@@ -285,6 +288,59 @@ class SettingsManager:
             else:
                 result[key] = copy.deepcopy(value)
         return result
+
+    # --------------------------------------------------------
+    # Method: _coerceToDefaultTypes
+    # Purpose: Repair hand-edited values whose JSON type differs
+    #          from the default (e.g. "false" for a bool, "10pt"
+    #          for an int). Unparseable values fall back to the
+    #          default so callers can trust the type.
+    # --------------------------------------------------------
+    def _coerceToDefaultTypes(self, data, defaults):
+        for key, default in defaults.items():
+            if key not in data:
+                continue
+            value = data[key]
+            if isinstance(default, dict):
+                data[key] = (
+                    self._coerceToDefaultTypes(value, default)
+                    if isinstance(value, dict)
+                    else copy.deepcopy(default)
+                )
+            elif isinstance(default, bool):
+                data[key] = self._coerceBool(value, default)
+            elif isinstance(default, int):
+                data[key] = self._coerceInt(value, default)
+            elif isinstance(default, str) and not isinstance(value, str):
+                data[key] = default
+        return data
+
+    @staticmethod
+    def _coerceBool(value, default):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off", ""):
+                return False
+        return default
+
+    @staticmethod
+    def _coerceInt(value, default):
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value
+        try:
+            if isinstance(value, float):
+                return int(value)
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return default
 
     # --------------------------------------------------------
     # Method: _writeJson
@@ -539,25 +595,27 @@ class SettingsManager:
 
     # --------------------------------------------------------
     # Persistence
+    # Output: bool - False when any file could not be written,
+    #         so callers can warn instead of assuming success.
     # --------------------------------------------------------
     def saveSettings(self):
-        update_bookmarks = self._prepareBookmarksForPersist()
-        self._finishBookmarkPersist(update_bookmarks)
-        self._writeJson(self._settings_path, self._settings)
-        self._backupConfigLocal()
+        return self._persist(write_settings=True, write_state=False)
 
     def saveState(self):
-        update_bookmarks = self._prepareBookmarksForPersist()
-        self._finishBookmarkPersist(update_bookmarks)
-        self._writeJson(self._state_path, self._state)
-        self._backupConfigLocal()
+        return self._persist(write_settings=False, write_state=True)
 
     def saveAll(self):
+        return self._persist(write_settings=True, write_state=True)
+
+    def _persist(self, write_settings, write_state):
         update_bookmarks = self._prepareBookmarksForPersist()
-        self._finishBookmarkPersist(update_bookmarks)
-        self._writeJson(self._settings_path, self._settings)
-        self._writeJson(self._state_path, self._state)
+        ok = self._finishBookmarkPersist(update_bookmarks)
+        if write_settings:
+            ok = self._writeJson(self._settings_path, self._settings) and ok
+        if write_state:
+            ok = self._writeJson(self._state_path, self._state) and ok
         self._backupConfigLocal()
+        return ok
 
     # --------------------------------------------------------
     # Method: buildProfileBundle
@@ -632,7 +690,9 @@ class SettingsManager:
 
         applied_settings = 0
         if isinstance(settings, dict):
-            self._settings = self._deepMerge(DEFAULT_SETTINGS, settings)
+            self._settings = self._coerceToDefaultTypes(
+                self._deepMerge(DEFAULT_SETTINGS, settings), DEFAULT_SETTINGS
+            )
             applied_settings = len(settings)
 
         applied_state_keys = []
@@ -644,6 +704,9 @@ class SettingsManager:
                 if key in ("left_panel", "right_panel", "sidebar_state", "folder_tags") and isinstance(value, dict):
                     defaults = DEFAULT_STATE.get(key, {})
                     self._state[key] = self._deepMerge(defaults, value) if isinstance(defaults, dict) else value
+                elif key == "bookmarks":
+                    value = self._normalizeBookmarkNodes(value if isinstance(value, list) else [])
+                    self._state[key] = value
                 else:
                     self._state[key] = value
                 if key == "bookmarks":
@@ -748,12 +811,17 @@ class SettingsManager:
         return self._writeJson(self._bookmarks_path, payload)
 
     def _finishBookmarkPersist(self, update_bookmarks):
-        """Write bookmarks.json before state.json so a failed state save cannot drop the list."""
+        """Write bookmarks.json before state.json so a failed state save cannot drop the list.
+
+        Returns False only when a needed bookmark write failed.
+        """
         if not update_bookmarks:
-            return
-        if self._writeBookmarkStore(self._state.get("bookmarks", [])):
-            self._writeLastGood(self._state.get("bookmarks", []))
-            self._bookmarks_dirty = False
+            return True
+        if not self._writeBookmarkStore(self._state.get("bookmarks", [])):
+            return False
+        self._writeLastGood(self._state.get("bookmarks", []))
+        self._bookmarks_dirty = False
+        return True
 
     def _prepareBookmarksForPersist(self):
         """Keep on-disk bookmarks when this process did not edit them.
@@ -835,7 +903,7 @@ class SettingsManager:
             )
         return True
 
-    def _quarantineCorruptState(self, path):
+    def _quarantineCorruptFile(self, path):
         dest = path + ".corrupt"
         if os.path.exists(dest):
             stamp = datetime.now().strftime("%Y%m%d%H%M%S")

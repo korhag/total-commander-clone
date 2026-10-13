@@ -261,13 +261,11 @@ class BatchRenameDialog(QDialog):
         self._preview_table.setRowCount(len(self._entries))
         changed_count = 0
         pattern_error = self._invalidRegexMessage()
+        plan = self._planRenames(apply_pattern=not pattern_error)
 
-        for row, entry in enumerate(self._entries):
-            _directory, original = self._renameTarget(entry)
-            if pattern_error:
-                new_name = original
-            else:
-                new_name = self._computeNewName(original, entry["is_dir"])
+        for row, item in enumerate(plan):
+            original = item["original"]
+            new_name = item["new_name"]
 
             orig_item = QTableWidgetItem(original)
             new_item = QTableWidgetItem(new_name)
@@ -305,25 +303,14 @@ class BatchRenameDialog(QDialog):
         successes = 0
         errors = []
 
-        for entry in self._entries:
-            directory, original = self._renameTarget(entry)
-            new_name = self._computeNewName(original, entry["is_dir"])
-
-            if new_name == original or not new_name.strip():
+        for item in self._planRenames():
+            if item["new_name"] == item["original"]:
                 continue
-
-            old_path = os.path.join(directory, original)
-            new_path = os.path.join(directory, new_name)
-
-            if os.path.exists(new_path) and os.path.normcase(new_path) != os.path.normcase(old_path):
-                new_name = self._resolveConflict(directory, new_name)
-                new_path = os.path.join(directory, new_name)
-
             try:
-                os.rename(old_path, new_path)
+                os.rename(item["old_path"], item["new_path"])
                 successes += 1
             except OSError as e:
-                errors.append(f"{original}: {e}")
+                errors.append(f"{item['original']}: {e}")
 
         if errors:
             error_text = "\n".join(errors[:15])
@@ -342,14 +329,57 @@ class BatchRenameDialog(QDialog):
         self.accept()
 
     # --------------------------------------------------------
-    # Method: _resolveConflict
-    # Purpose: Auto-increments a filename to avoid conflicts.
+    # Method: _planRenames
+    # Purpose: Final name for every entry, in order, with name
+    #          collisions already resolved (against files on disk
+    #          and against names claimed earlier in the batch).
+    #          Preview and apply both use this, so what the user
+    #          sees is exactly what gets written.
+    # Input:  apply_pattern (bool) - False keeps every original name.
+    # Output: list of dicts: original, new_name, old_path, new_path.
     # --------------------------------------------------------
-    def _resolveConflict(self, directory, name):
+    def _planRenames(self, apply_pattern=True):
+        plan = []
+        claimed = set()
+        for entry in self._entries:
+            directory, original = self._renameTarget(entry)
+            old_path = os.path.join(directory, original)
+            new_name = original
+            if apply_pattern:
+                candidate = self._computeNewName(original, entry["is_dir"])
+                if candidate.strip():
+                    new_name = candidate
+            if new_name != original:
+                new_name = self._resolveConflict(directory, new_name, old_path, claimed)
+            new_path = os.path.join(directory, new_name)
+            if new_name != original:
+                claimed.add(os.path.normcase(new_path))
+            plan.append({
+                "original": original,
+                "new_name": new_name,
+                "old_path": old_path,
+                "new_path": new_path,
+            })
+        return plan
+
+    # --------------------------------------------------------
+    # Method: _resolveConflict
+    # Purpose: Auto-increments a filename until it is free on disk
+    #          and not already claimed in this batch. A case-only
+    #          change of the file's own name is not a conflict.
+    # --------------------------------------------------------
+    def _resolveConflict(self, directory, name, old_path, claimed):
+        def taken(candidate):
+            path = os.path.join(directory, candidate)
+            key = os.path.normcase(path)
+            if key in claimed:
+                return True
+            return os.path.exists(path) and key != os.path.normcase(old_path)
+
         base, ext = os.path.splitext(name)
         counter = 1
         candidate = name
-        while os.path.exists(os.path.join(directory, candidate)):
+        while taken(candidate):
             candidate = f"{base} ({counter}){ext}"
             counter += 1
         return candidate

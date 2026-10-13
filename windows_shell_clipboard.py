@@ -147,9 +147,15 @@ if os.name == "nt":
                 raise ctypes.WinError(ctypes.get_last_error())
             drop_handle = None
 
-            if effect_format:
-                if user32.SetClipboardData(effect_format, effect_handle):
-                    effect_handle = None
+            effect_set = bool(effect_format) and bool(
+                user32.SetClipboardData(effect_format, effect_handle)
+            )
+            if effect_set:
+                effect_handle = None
+            elif mode == "cut":
+                # Without the move effect a paste would copy instead of move.
+                user32.EmptyClipboard()
+                return False
 
             return True
         finally:

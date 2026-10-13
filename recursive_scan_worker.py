@@ -86,6 +86,8 @@ class RecursiveScanThread(QThread):
                     rel_dir = ""
 
                 for d in dirnames:
+                    if self._cancel:
+                        break
                     full_path = os.path.join(dirpath, d)
                     if _skip_hidden(full_path, d, self._show_hidden):
                         continue
@@ -107,6 +109,8 @@ class RecursiveScanThread(QThread):
                         continue
 
                 for f in filenames:
+                    if self._cancel:
+                        break
                     if _skip_hidden(os.path.join(dirpath, f), f, self._show_hidden):
                         continue
                     full_path = os.path.join(dirpath, f)

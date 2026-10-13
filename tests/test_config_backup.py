@@ -167,6 +167,54 @@ class TestConfigBackup(unittest.TestCase):
         self.assertTrue(callable(config_backup.saveGitAccountCredentials))
         self.assertTrue(callable(config_backup.findGitRepoRoot))
 
+    # --------------------------------------------------------
+    # Method: test_failed_backup_write_keeps_previous_files
+    # Purpose: A write failure part-way through must not leave a
+    #          mix of old and new files in the backup folder.
+    # --------------------------------------------------------
+    def test_failed_backup_write_keeps_previous_files(self):
+        backup_dir = self._writeBackup()
+        real_write = config_backup._writeTempJson
+        calls = []
+
+        def _fail_second(path, data):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real_write(path, data)
+
+        changed = dict(self.SAMPLE_SETTINGS, theme_mode="light")
+        with mock.patch.object(config_backup, "getComputerName", return_value=self.host), \
+                mock.patch.object(config_backup, "_writeTempJson", side_effect=_fail_second):
+            with self.assertRaises(OSError):
+                config_backup.writeConfigBackup(
+                    changed, self.SAMPLE_STATE, user_data_dir=self.user_data_dir
+                )
+
+        with open(os.path.join(backup_dir, "settings.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["theme_mode"], "dark")
+        self.assertEqual([n for n in os.listdir(backup_dir) if n.endswith(".tmp")], [])
+
+    # --------------------------------------------------------
+    # Method: test_push_auth_token_never_on_command_line
+    # Purpose: The PAT reaches git through the environment only.
+    # --------------------------------------------------------
+    def test_push_auth_token_never_on_command_line(self):
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(config_backup.subprocess, "run", return_value=completed) as git_run:
+            ok, _out = config_backup.runGitPushWithAuth(
+                self.user_data_dir, auth={"username": "someone", "pat": "secret-token"}
+            )
+
+        self.assertTrue(ok)
+        args, kwargs = git_run.call_args
+        argv = " ".join(args[0])
+        self.assertNotIn("extraHeader", argv)
+        self.assertNotIn("secret-token", argv)
+        env = kwargs["env"]
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "http.extraHeader")
+        self.assertTrue(env["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic "))
+
 
 if __name__ == "__main__":
     unittest.main()

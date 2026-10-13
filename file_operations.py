@@ -5,6 +5,7 @@ progress dialogs, conflict resolution (overwrite/cancel/keep both/skip),
 and proper error handling.
 """
 
+import errno
 import os
 import shutil
 from datetime import datetime
@@ -85,6 +86,24 @@ def _sameVolume(path_a, path_b):
         os.path.splitdrive(os.path.abspath(path_a))[0].lower()
         == os.path.splitdrive(os.path.abspath(path_b))[0].lower()
     )
+
+
+# Windows ERROR_NOT_SAME_DEVICE: rename across mount points / junctions.
+_WIN_ERROR_NOT_SAME_DEVICE = 17
+
+
+def _tryRename(source, dest_path):
+    """
+    Rename source to dest_path. Returns False (nothing changed) when the OS
+    reports the paths are on different devices; other errors are raised.
+    """
+    try:
+        os.rename(source, dest_path)
+        return True
+    except OSError as exc:
+        if exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == _WIN_ERROR_NOT_SAME_DEVICE:
+            return False
+        raise
 
 
 def _destRelation(source, dest_path):
@@ -693,7 +712,10 @@ class FileOperationWorker(QThread):
     # Method: cancel
     # --------------------------------------------------------
     def cancel(self):
+        self._conflict_mutex.lock()
         self._cancelled = True
+        self._conflict_condition.wakeAll()
+        self._conflict_mutex.unlock()
 
     # --------------------------------------------------------
     # Method: setConflictResponse
@@ -812,9 +834,13 @@ class FileOperationWorker(QThread):
                 if self._conflict_match_policy == CONFLICT_SKIP_IF_SAME:
                     return _SKIP_ITEM
 
+        self._conflict_mutex.lock()
+        self._conflict_choice = None
+        self._conflict_mutex.unlock()
         self.conflictDetected.emit(source_path, dest_path, file_name)
         self._conflict_mutex.lock()
-        self._conflict_condition.wait(self._conflict_mutex)
+        while self._conflict_choice is None and not self._cancelled:
+            self._conflict_condition.wait(self._conflict_mutex)
         choice = self._conflict_choice
         new_dest = self._conflict_new_dest
         self._conflict_choice = None
@@ -989,10 +1015,33 @@ class FileOperationWorker(QThread):
     def _copyDirectoryOrAbort(self, source, dest_path, item_index, total_items):
         """Copy a folder, and remove the partial destination if the user cancels."""
         try:
+            os.makedirs(dest_path, exist_ok=True)
             self._copyDirectoryWithProgress(source, dest_path, item_index, total_items)
         except UserAbortError:
             self._removePartial(dest_path)
             raise
+
+    # --------------------------------------------------------
+    # Method: _writeWithBackup
+    # Purpose: Run produce() to create dest_path. An existing
+    #          dest_path is set aside first and only deleted after
+    #          produce() succeeds, so a failed or cancelled
+    #          overwrite restores the original destination.
+    # --------------------------------------------------------
+    def _writeWithBackup(self, dest_path, produce):
+        backup = None
+        if os.path.lexists(dest_path):
+            backup = _resolveConflictPath(f"{dest_path}.tcc-old")
+            os.rename(dest_path, backup)
+        try:
+            produce()
+        except BaseException:
+            if backup:
+                self._removePartial(dest_path)
+                os.rename(backup, dest_path)
+            raise
+        if backup:
+            self._removePartial(backup)
 
     def _copyItem(self, source, dest_dir, item_index, total_items, relative_path=None):
         dest_path, name = self._destPathForItem(source, dest_dir, relative_path)
@@ -1011,14 +1060,13 @@ class FileOperationWorker(QThread):
             if parent:
                 os.makedirs(parent, exist_ok=True)
 
-        if os.path.isdir(source):
-            if os.path.exists(dest_path):
-                shutil.rmtree(dest_path)
-            os.makedirs(dest_path, exist_ok=True)
-            self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
-        else:
-            self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
+        def produce():
+            if os.path.isdir(source):
+                self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
+            else:
+                self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
 
+        self._writeWithBackup(dest_path, produce)
         self._finishItemProgress(source, name, item_index, total_items)
 
     # --------------------------------------------------------
@@ -1041,33 +1089,42 @@ class FileOperationWorker(QThread):
             if parent:
                 os.makedirs(parent, exist_ok=True)
 
-        if _sameVolume(source, dest_path):
-            if os.path.exists(dest_path):
-                if os.path.isdir(dest_path):
-                    shutil.rmtree(dest_path)
-                else:
-                    os.remove(dest_path)
-            parent = os.path.dirname(dest_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            shutil.move(source, dest_path)
-            self._finishItemProgress(source, name, item_index, total_items)
-            return
+        copied = False
 
-        if os.path.exists(dest_path):
-            if os.path.isdir(dest_path):
-                shutil.rmtree(dest_path)
+        def produce():
+            nonlocal copied
+            if _sameVolume(source, dest_path) and _tryRename(source, dest_path):
+                return
+            if os.path.isdir(source):
+                self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
             else:
-                os.remove(dest_path)
+                self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
+            if self._cancelled:
+                self._removePartial(dest_path)
+                raise UserAbortError()
+            copied = True
 
-        if os.path.isdir(source):
-            self._copyDirectoryOrAbort(source, dest_path, item_index, total_items)
-            shutil.rmtree(source)
-        else:
-            self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
-            os.remove(source)
-
+        self._writeWithBackup(dest_path, produce)
+        if copied:
+            self._removeMovedSource(source, dest_path)
         self._finishItemProgress(source, name, item_index, total_items)
+
+    # --------------------------------------------------------
+    # Method: _removeMovedSource
+    # Purpose: Delete the original after a cross-volume move copy.
+    #          A failure is reported as an error, never as success;
+    #          the complete copy at dest_path is kept.
+    # --------------------------------------------------------
+    def _removeMovedSource(self, source, dest_path):
+        try:
+            if os.path.isdir(source):
+                shutil.rmtree(source)
+            else:
+                os.remove(source)
+        except OSError as exc:
+            raise OSError(
+                f"Copied to '{dest_path}' but could not remove the original: {exc}"
+            ) from exc
 
     # --------------------------------------------------------
     # Method: _deleteItem
@@ -1292,7 +1349,8 @@ def renameFile(old_path, new_name, parent=None):
     directory = os.path.dirname(old_path)
     new_path = os.path.join(directory, new_name)
 
-    if os.path.exists(new_path):
+    case_only = os.path.normcase(new_path) == os.path.normcase(old_path)
+    if os.path.exists(new_path) and not case_only:
         return False, old_path, f"'{new_name}' already exists."
 
     try:

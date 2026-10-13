@@ -1,8 +1,9 @@
 """
 Session + disk cache for recursive (Subfolders) directory scans.
 
-Avoids full os.walk when returning to the same root with an unchanged
-root mtime. Disk cache lives under the app config dir and is pruned on startup.
+Avoids full os.walk when returning to the same root while the root and
+every cached subfolder still have their recorded mtime. Disk cache lives
+under the app config dir and is pruned on startup.
 """
 
 from __future__ import annotations
@@ -74,6 +75,28 @@ def _rootMtime(root: str) -> Optional[float]:
 
 
 # ------------------------------------------------------------
+# Function: _directoriesUnchanged
+# Purpose: A folder's mtime changes when an item directly inside
+#          it is added, removed or renamed. Comparing every cached
+#          folder row with the disk catches changes anywhere in
+#          the tree for one stat per folder instead of a full walk.
+#          In-place edits to a file's contents are not detected.
+# ------------------------------------------------------------
+def _directoriesUnchanged(entries: List[dict]) -> bool:
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("is_dir"):
+            continue
+        try:
+            current = float(os.path.getmtime(entry.get("full_path") or ""))
+            cached = float(entry.get("mod_time"))
+        except (OSError, TypeError, ValueError):
+            return False
+        if abs(current - cached) >= 1e-6:
+            return False
+    return True
+
+
+# ------------------------------------------------------------
 # Function: _diskDir
 # ------------------------------------------------------------
 def _diskDir() -> Optional[str]:
@@ -110,10 +133,14 @@ def getScanCache(root: str, show_hidden: bool) -> Optional[List[dict]]:
     hit = _session.get(key)
     if hit is not None and abs(float(hit.get("root_mtime", -1)) - mtime) < 1e-6:
         entries = hit.get("entries")
-        if isinstance(entries, list):
+        if isinstance(entries, list) and _directoriesUnchanged(entries):
             return list(entries)
+        _session.pop(key, None)
 
     disk = _loadDiskCache(root, show_hidden, mtime)
+    if disk is not None and not _directoriesUnchanged(disk):
+        _removeDiskFile(root, show_hidden)
+        disk = None
     if disk is not None:
         _session[key] = {
             "entries": disk,
