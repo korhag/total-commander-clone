@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.9.1] - 2026-10-13
+
+### Fixed
+
+- **Explorer toolbar button**: The button now shows its label, like the other toolbar buttons. It was icon-only before.
+
+## [0.9.0] - 2026-10-13
+
+### Added
+
+- **Folder tabs**: Each panel has a tab bar. Ctrl+T opens another tab on the current folder, Ctrl+W closes the current tab (the last one stays open), and Ctrl+Tab / Ctrl+Shift+Tab switch tabs. Middle-click a tab to close it. Right-click a folder and choose **Open in New Tab**. Each tab keeps its own folder, history, and filter. The tabs are restored the next time the app starts. An older settings file, with one folder per panel, still opens as a single tab.
+
+## [0.8.0] - 2026-10-13
+
+### Added
+
+- **Viewer (F3)**: Opens the selected file in a window that stays open while you keep using the file list. Images are shown scaled. Text files are shown read-only (the first 256 KB). Other files are a hex dump of the start of the file. Esc closes the window. N and P move to the next and previous file.
+- **Edit (F4)**: Opens the selected file in the system editor (Notepad on Windows).
+- **Quick view (Ctrl+Q)**: Shows the selected file in the other panel, and follows the selection. Ctrl+Q again returns that panel to the file list.
+
+## [0.7.0] - 2026-10-13
+
+### Added
+
+- **Auto-refresh**: When a download, Explorer, or another program changes the folder open in a panel, the file list updates on its own. The selection and the scroll position stay put. A rename in progress is not interrupted. In Subfolders mode the tree is not walked again; the saved scan is dropped so the next Refresh reads the disk. Turn it off under Settings → Auto-refresh.
+
 ## [0.6.0] - 2026-10-13
 
 ### Added

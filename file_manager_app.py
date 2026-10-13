@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget,
     QMenu, QMessageBox, QInputDialog, QApplication, QLabel,
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QFileDialog,
-    QStyle, QTabWidget, QStackedWidget, QSizePolicy, QToolButton,
+    QTabWidget, QStackedWidget, QSizePolicy, QToolButton,
 )
 from PyQt5.QtCore import Qt, QUrl, QTimer, QRect, QSize, QEvent, QThread, pyqtSignal
 from PyQt5.QtGui import QKeySequence, QDesktopServices, QIcon
@@ -34,6 +34,7 @@ from windows_shell_clipboard import setFileClipboard, getClipboardDropEffect
 from app_version import APP_VERSION, APP_NAME, getWindowTitle
 from file_properties_dialog import showFileProperties
 from file_viewer import FileViewerWidget, FileViewerWindow, openInSystemEditor
+from panel_tabs import PanelTabBar, activeTabRecord
 from settings_dialog import SettingsDialog
 from theme import applyTheme, getUiMetrics, normalize_ui_scale, step_ui_scale, ui_scale_label
 from app_updater import (
@@ -452,6 +453,37 @@ class FileManagerApp(QMainWindow):
 
         view_menu.addSeparator()
 
+        self._action_new_tab = QAction("New Tab\tCtrl+T", self)
+        self._action_new_tab.setToolTip(
+            "New tab\n\nOpen another tab on the current folder. Shortcut: Ctrl+T."
+        )
+        self._action_new_tab.triggered.connect(self._onNewTab)
+        view_menu.addAction(self._action_new_tab)
+
+        self._action_close_tab = QAction("Close Tab\tCtrl+W", self)
+        self._action_close_tab.setToolTip(
+            "Close tab\n\nClose the current tab. The last tab stays open. Shortcut: Ctrl+W."
+        )
+        self._action_close_tab.triggered.connect(self._onCloseTab)
+        view_menu.addAction(self._action_close_tab)
+
+        self._action_next_tab = QAction("Next Tab\tCtrl+Tab", self)
+        self._action_next_tab.setToolTip(
+            "Next tab\n\nSwitch to the next tab in the active panel. Shortcut: Ctrl+Tab."
+        )
+        self._action_next_tab.triggered.connect(self._onNextTab)
+        view_menu.addAction(self._action_next_tab)
+
+        self._action_previous_tab = QAction("Previous Tab\tCtrl+Shift+Tab", self)
+        self._action_previous_tab.setToolTip(
+            "Previous tab\n\nSwitch to the previous tab in the active panel. "
+            "Shortcut: Ctrl+Shift+Tab."
+        )
+        self._action_previous_tab.triggered.connect(self._onPreviousTab)
+        view_menu.addAction(self._action_previous_tab)
+
+        view_menu.addSeparator()
+
         self._action_show_hidden = QAction("Show Hidden Files", self)
         self._action_show_hidden.setToolTip(
             "Show hidden files\n\nToggle display of hidden and system items."
@@ -576,7 +608,6 @@ class FileManagerApp(QMainWindow):
         self._toolbar = QToolBar("Main Toolbar", self)
         self._toolbar.setMovable(False)
         self.addToolBar(self._toolbar)
-        style = QApplication.instance().style()
         toolbar = self._toolbar
 
         self._tb_copy = QAction("\U0001F4CB Copy (F6)", self)
@@ -636,12 +667,11 @@ class FileManagerApp(QMainWindow):
         self._tb_bookmark.triggered.connect(self._onAddBookmark)
         toolbar.addAction(self._tb_bookmark)
 
-        self._tb_open_explorer = QAction("Explorer", self)
+        self._tb_open_explorer = QAction("\U0001F4C2 Explorer", self)
         self._tb_open_explorer.setToolTip(
             "Open in Explorer\n\n"
             "Open the active panel’s folder in the system file manager."
         )
-        self._tb_open_explorer.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
         self._tb_open_explorer.triggered.connect(self._onOpenActivePathInExplorer)
         toolbar.addAction(self._tb_open_explorer)
 
@@ -767,11 +797,22 @@ class FileManagerApp(QMainWindow):
         self._left_stack.addWidget(self._left_quick_view)
         self._right_stack.addWidget(self._right_quick_view)
 
+        self._left_tabs = PanelTabBar(self._left_panel)
+        self._right_tabs = PanelTabBar(self._right_panel)
+        self._left_tabs.tabDisplayed.connect(
+            lambda: self._showFilePanel("left")
+        )
+        self._right_tabs.tabDisplayed.connect(
+            lambda: self._showFilePanel("right")
+        )
+        self._left_panel.setStateSnapshot(lambda: self._savePanelTabs("left"))
+        self._right_panel.setStateSnapshot(lambda: self._savePanelTabs("right"))
+
         self._center_buttons = self._buildCenterButtons()
 
-        panels_layout.addWidget(self._left_stack, 1)
+        panels_layout.addWidget(self._panelSideHost(self._left_tabs, self._left_stack), 1)
         panels_layout.addWidget(self._center_buttons)
-        panels_layout.addWidget(self._right_stack, 1)
+        panels_layout.addWidget(self._panelSideHost(self._right_tabs, self._right_stack), 1)
 
         file_panes_widget = QWidget()
         file_panes_widget.setLayout(panels_layout)
@@ -866,6 +907,35 @@ class FileManagerApp(QMainWindow):
         )
 
         self._setActivePanel(self._left_panel)
+
+    # --------------------------------------------------------
+    # Method: _panelSideHost
+    # Purpose: Tab strip above the file / library / quick-view stack.
+    # --------------------------------------------------------
+    def _panelSideHost(self, tabs, stack):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(tabs)
+        layout.addWidget(stack, 1)
+        return host
+
+    def _showFilePanel(self, side):
+        if side == "left":
+            self._left_stack.setCurrentWidget(self._left_panel)
+        else:
+            self._right_stack.setCurrentWidget(self._right_panel)
+
+    def _savePanelTabs(self, side):
+        tabs = self._left_tabs if side == "left" else self._right_tabs
+        self._settings.setPanelState(side, tabs.exportState())
+        self._settings.saveSettings()
+
+    def _tabsForActive(self):
+        if self._active_panel is self._right_panel:
+            return self._right_tabs
+        return self._left_tabs
 
     # --------------------------------------------------------
     # Method: _buildCenterButtons
@@ -1201,6 +1271,10 @@ class FileManagerApp(QMainWindow):
             QKeySequence("Ctrl+Shift+L"):                 self._onToggleLibraryBrowserActive,
             QKeySequence("Ctrl+Shift+M"):                 self._onMirrorToOther,
             QKeySequence("Ctrl+Q"):                       self._onToggleQuickView,
+            QKeySequence("Ctrl+T"):                       self._onNewTab,
+            QKeySequence("Ctrl+W"):                       self._onCloseTab,
+            QKeySequence("Ctrl+Tab"):                     self._onNextTab,
+            QKeySequence("Ctrl+Shift+Tab"):               self._onPreviousTab,
             QKeySequence("Ctrl+,"):                       self._onOpenSettings,
         }
 
@@ -1236,8 +1310,12 @@ class FileManagerApp(QMainWindow):
         left_state = self._settings.getPanelState("left")
         right_state = self._settings.getPanelState("right")
 
-        saved_left = left_state.get("current_path", "")
-        saved_right = right_state.get("current_path", "")
+        saved_left = activeTabRecord(left_state).get("current_path", "") or ""
+        saved_right = activeTabRecord(right_state).get("current_path", "") or ""
+        if not isinstance(saved_left, str):
+            saved_left = ""
+        if not isinstance(saved_right, str):
+            saved_right = ""
         left_path = saved_left or self._settings.getSetting("default_left_path", "") or home
         right_path = saved_right or self._settings.getSetting("default_right_path", "") or home
 
@@ -1249,20 +1327,20 @@ class FileManagerApp(QMainWindow):
         # Home is shown before this runs, so currentPath() is already set.
         # A panel the user already navigated away from home keeps that folder.
         # Otherwise apply defaults when the saved folder is missing, not only when empty.
-        for panel, state, saved, fallback in (
-            (self._left_panel, left_state, saved_left, left_path),
-            (self._right_panel, right_state, saved_right, right_path),
+        for panel, tabs, state, saved, fallback in (
+            (self._left_panel, self._left_tabs, left_state, saved_left, left_path),
+            (self._right_panel, self._right_tabs, right_state, saved_right, right_path),
         ):
             if self._panelMovedSinceStartup(panel, home):
                 continue
-            panel.restoreHistoryData(state)
+            tabs.importState(state)
             if not saved or not os.path.isdir(saved):
                 panel.navigateTo(fallback)
 
         fallback_widths = self._settings.getSetting("column_widths", {})
-        if fallback_widths and not left_state.get("column_widths"):
+        if fallback_widths and not activeTabRecord(left_state).get("column_widths"):
             self._left_panel.applyColumnWidths(fallback_widths)
-        if fallback_widths and not right_state.get("column_widths"):
+        if fallback_widths and not activeTabRecord(right_state).get("column_widths"):
             self._right_panel.applyColumnWidths(fallback_widths)
 
         show_hidden = self._settings.getSetting("show_hidden_files", False)
@@ -1676,6 +1754,41 @@ class FileManagerApp(QMainWindow):
         self._showStatus("Quick view on. Ctrl+Q hides it.")
 
     # --------------------------------------------------------
+    # Method: _onNewTab
+    # Purpose: Ctrl+T. Another tab on the active panel's folder.
+    # --------------------------------------------------------
+    def _onNewTab(self):
+        if not self._activePanelReady():
+            return
+        self._tabsForActive().newTab()
+
+    def _onCloseTab(self):
+        if not self._activePanelReady():
+            return
+        if not self._tabsForActive().closeTab():
+            self._showStatus("The last tab stays open.")
+
+    def _onNextTab(self):
+        if not self._active_panel:
+            return
+        self._tabsForActive().selectRelative(1)
+
+    def _onPreviousTab(self):
+        if not self._active_panel:
+            return
+        self._tabsForActive().selectRelative(-1)
+
+    def _openInNewTab(self, panel, path):
+        tabs = self._left_tabs if panel is self._left_panel else self._right_tabs
+        side = "left" if panel is self._left_panel else "right"
+        self._showFilePanel(side)
+        if not tabs.openInNewTab(path):
+            self._showStatus("That folder cannot be opened.")
+            return
+        self._setActivePanel(panel)
+        self._showStatus(f"Opened in a new tab: {path}")
+
+    # --------------------------------------------------------
     # Method: _refreshQuickView
     # Purpose: If the other panel is showing quick view, update
     #          it to the source panel's selected file.
@@ -1907,11 +2020,10 @@ class FileManagerApp(QMainWindow):
         self._rebuildBookmarksMenu()
         self._reloadLibrariesPanel()
         for side in ("left", "right"):
-            panel = self._left_panel if side == "left" else self._right_panel
+            tabs = self._left_tabs if side == "left" else self._right_tabs
             panel_state = self._settings.getPanelState(side)
             if isinstance(panel_state, dict):
-                panel.applyFilterState(panel_state)
-                panel.restoreHistoryData(panel_state)
+                tabs.importState(panel_state)
         self._updateMirrorTooltips()
         self._showStatus("Profile imported.")
 
@@ -2352,6 +2464,18 @@ class FileManagerApp(QMainWindow):
             open_action = menu.addAction(open_label)
             open_action.setToolTip(open_tip)
             open_action.triggered.connect(lambda: self._onContextOpen(entry))
+
+            if entry["is_dir"]:
+                folder_path = entry["full_path"]
+
+                def _open_folder_in_new_tab(checked=False, path=folder_path, target=panel):
+                    self._openInNewTab(target, path)
+
+                new_tab_action = menu.addAction("Open in New Tab")
+                new_tab_action.setToolTip(
+                    "Open in new tab\n\nOpen this folder in another tab on this panel."
+                )
+                new_tab_action.triggered.connect(_open_folder_in_new_tab)
 
             if not entry["is_dir"]:
                 view_action = menu.addAction("View\tF3")
@@ -3113,8 +3237,8 @@ class FileManagerApp(QMainWindow):
             "height": geo.height(),
         })
 
-        self._settings.setPanelState("left", self._left_panel.getHistoryData())
-        self._settings.setPanelState("right", self._right_panel.getHistoryData())
+        self._settings.setPanelState("left", self._left_tabs.exportState())
+        self._settings.setPanelState("right", self._right_tabs.exportState())
 
         bm_width = self._main_splitter.sizes()[0]
         if bm_width >= 180:

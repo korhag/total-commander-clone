@@ -1570,6 +1570,9 @@ class FilePanel(QWidget):
         self._auto_refresh_deferred = False
         self._dir_watcher = QFileSystemWatcher(self)
         self._dir_watcher.directoryChanged.connect(self._onWatchedDirectoryChanged)
+        # When set, column and thumbnail saves write the tab list
+        # instead of a single folder dict.
+        self._state_snapshot = None
 
         self._initUI()
         self._connectSignals()
@@ -1996,9 +1999,21 @@ class FilePanel(QWidget):
     def _onThumbnailsToggled(self, checked):
         self.setShowThumbnails(checked, persist=True)
 
+    def setStateSnapshot(self, callback):
+        """Save panel state through the tab bar when one is attached."""
+        self._state_snapshot = callback
+
+    def _savePanelSnapshot(self):
+        if self._state_snapshot is None:
+            return False
+        self._state_snapshot()
+        return True
+
     def _persistShowThumbnails(self):
         """Remember the toggle in this panel's saved state."""
         if self._settings_manager is None:
+            return
+        if self._savePanelSnapshot():
             return
         current = dict(self._settings_manager.getPanelState(self._panel_side))
         current["show_thumbnails"] = self._source_model.showThumbnails()
@@ -2188,6 +2203,8 @@ class FilePanel(QWidget):
 
     def _persistColumnWidthsToState(self):
         if self._settings_manager is None:
+            return
+        if self._savePanelSnapshot():
             return
         lock_state = self.getColumnWidthLockState()
         panel_key = f"{self._panel_side}_panel"
