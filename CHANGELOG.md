@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.10.1] - 2026-10-14
+
+### Changed
+
+- **Local build only**: `scripts\build.bat` now builds the current sources with PyInstaller and does not sync, push, or pull Git. `scripts\build-user.bat`, `scripts\git-sync-before-build.cmd`, and the `BuildSync` action in `scripts\git-sync.ps1` were removed. The in-app updater rebuilds with `scripts\build.bat`.
+
 ## [0.10.0] - 2026-10-14
 
 ### Added

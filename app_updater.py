@@ -94,10 +94,7 @@ def _looksLikeProjectRoot(path: str) -> bool:
     return (
         os.path.isfile(os.path.join(path, "main.py"))
         and os.path.isfile(os.path.join(path, "scripts", "update-and-rebuild.bat"))
-        and (
-            os.path.isfile(os.path.join(path, "scripts", "build-user.bat"))
-            or os.path.isfile(os.path.join(path, "scripts", "build.bat"))
-        )
+        and os.path.isfile(os.path.join(path, "scripts", "build.bat"))
     )
 
 
@@ -442,7 +439,7 @@ def checkRemoteAppVersion(
         f"Repo:     {PUBLIC_REPO_OWNER}/{PUBLIC_REPO_NAME}\n"
         f"Branch:   {branch}\n\n"
         f"Update now? This will close the app, {how}, "
-        "rebuild the .exe (scripts\\build-user.bat), and restart.\n"
+        "rebuild the .exe (scripts\\build.bat), and restart.\n"
         "No GitHub login is required."
     )
     return result

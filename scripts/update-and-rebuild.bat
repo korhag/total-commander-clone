@@ -6,7 +6,7 @@ REM Script: scripts/update-and-rebuild.bat
 REM Purpose: Called from the app when the user accepts an update.
 REM          Waits for TotalCommanderClone.exe to exit, gets the
 REM          latest public code (git pull OR GitHub zip if Git is
-REM          missing), rebuilds with build-user.bat, then relaunches.
+REM          missing), rebuilds with build.bat, then relaunches.
 REM
 REM No GitHub username/PAT required for the public repo.
 REM ------------------------------------------------------------
@@ -65,8 +65,8 @@ if defined HAVE_GIT (
 )
 
 echo.
-echo [INFO] Building new executable ^(scripts\build-user.bat^)...
-call "%~dp0build-user.bat"
+echo [INFO] Building new executable ^(scripts\build.bat^)...
+call "%~dp0build.bat"
 if errorlevel 1 (
     echo [ERROR] Build failed. See messages above.
     goto fail
@@ -120,7 +120,7 @@ echo [INFO] Merging %REMOTE%/%BRANCH% into local branch...
 git merge --no-edit "%REMOTE%/%BRANCH%"
 if errorlevel 1 (
     echo [ERROR] git merge failed ^(conflicts or local changes?^).
-    echo         Resolve conflicts, then run: scripts\build-user.bat
+    echo         Resolve conflicts, then run: scripts\build.bat
     exit /b 1
 )
 exit /b 0

@@ -10,9 +10,7 @@
     or authentication fails, the script prompts for URL, username, PAT, etc.
 
 .PARAMETER Action
-  Push, Pull, Both, or BuildSync (default: Both).
-  BuildSync compares APP_VERSION in app_version.py with the remote branch and
-  pushes when local is ahead or pulls when local is behind (used by build.bat).
+  Push, Pull, or Both (default: Both).
 
 .PARAMETER RemoteName
   Remote name (default: origin)
@@ -28,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("Push", "Pull", "Both", "BuildSync")]
+    [ValidateSet("Push", "Pull", "Both")]
     [string] $Action = "Both",
 
     [string] $RemoteName = "origin",
@@ -536,8 +534,6 @@ function Get-DefaultCommitMessage {
 }
 
 function Ensure-InitialCommit {
-    param([switch] $AutoCommit)
-
     $hasCommits = $true
     try {
         Invoke-Git -Args @("rev-parse", "HEAD") | Out-Null
@@ -565,12 +561,7 @@ function Ensure-InitialCommit {
             Write-Ok ("CHANGELOG latest release: v{0} (no [Unreleased] notes - using that version)" -f (Format-ProjectVersion $latestReleased))
         }
         $defaultMsg = Get-DefaultCommitMessage
-        if ($AutoCommit) {
-            $msg = $defaultMsg
-            Write-Ok "Auto-commit message: $msg"
-        } else {
-            $msg = Read-HostWithDefault -Prompt "Commit message" -Default $defaultMsg
-        }
+        $msg = Read-HostWithDefault -Prompt "Commit message" -Default $defaultMsg
         Invoke-Git -Args @("add", "-A") | Out-Null
         Invoke-Git -Args @("commit", "-m", $msg) | Out-Null
         Write-Ok "Changes committed"
@@ -579,14 +570,13 @@ function Ensure-InitialCommit {
 
 function Invoke-GitPush {
     param(
-        [string] $RemoteUrl,
-        [switch] $AutoCommit
+        [string] $RemoteUrl
     )
 
     Write-Step "Pushing to Git ($RemoteName)"
     $branch = Get-CurrentBranch
     Ensure-BranchExists -Name $branch
-    Ensure-InitialCommit -AutoCommit:$AutoCommit
+    Ensure-InitialCommit
 
     $pushArgs = @("push", "-u", $RemoteName, $branch)
     $useAuth = [bool]$script:GitAuth
@@ -816,123 +806,6 @@ function Invoke-GitPull {
     }
 }
 
-function Get-AppVersionFilePath {
-    Join-Path $RepoRoot "app_version.py"
-}
-
-function Parse-AppVersionFromText {
-    param([string] $Text)
-    if ($Text -match 'APP_VERSION\s*=\s*["''](\d+\.\d+\.\d+(?:\.\d+)?)["'']') {
-        return [version]$matches[1]
-    }
-    return $null
-}
-
-function Get-LocalAppVersion {
-    $path = Get-AppVersionFilePath
-    if (-not (Test-Path $path)) {
-        throw "Could not find app_version.py at $path"
-    }
-    $content = Get-Content -Path $path -Raw -Encoding UTF8
-    $ver = Parse-AppVersionFromText -Text $content
-    if (-not $ver) {
-        throw "Could not parse APP_VERSION from app_version.py"
-    }
-    return $ver
-}
-
-function Get-RemoteAppVersionFromRef {
-    param([string] $Ref)
-    try {
-        $content = Invoke-Git -Args @("show", "${Ref}:app_version.py")
-        return Parse-AppVersionFromText -Text $content
-    } catch {
-        return $null
-    }
-}
-
-function Invoke-GitFetchBranch {
-    param([string] $Remote, [string] $Branch)
-    $fetchArgs = @("fetch", $Remote, $Branch)
-
-    while ($true) {
-        try {
-            Invoke-GitRemoteCommand -Args $fetchArgs
-            return
-        } catch {
-            $err = $_.Exception.Message
-
-            if (-not $script:GitAuth) {
-                Write-WarnMsg "Fetch failed; authentication may be required."
-                Get-AuthCredentials | Out-Null
-                continue
-            }
-
-            if (Test-GitHubAuthError $err) {
-                switch (Read-CredentialFixChoice) {
-                    "retry" { continue }
-                    "username" {
-                        Update-GitUsername
-                        continue
-                    }
-                    "url" {
-                        Update-RemoteUrlInteractive | Out-Null
-                        continue
-                    }
-                    "pat" {
-                        Clear-GitAuth
-                        continue
-                    }
-                    "quit" {
-                        throw "Fetch cancelled."
-                    }
-                }
-            }
-
-            throw
-        }
-    }
-}
-
-function Invoke-BuildSync {
-    param([string] $RemoteUrl)
-
-    Write-Step "Comparing APP_VERSION with remote ($RemoteName)"
-    $branch = Get-CurrentBranch
-    $localVer = Get-LocalAppVersion
-    Write-Ok ("Local  APP_VERSION: v{0}" -f (Format-ProjectVersion $localVer))
-
-    $remoteRef = "${RemoteName}/${branch}"
-    $remoteVer = $null
-
-    if (Test-RemoteBranchExists -Remote $RemoteName -Branch $branch) {
-        Invoke-GitFetchBranch -Remote $RemoteName -Branch $branch
-        $remoteVer = Get-RemoteAppVersionFromRef -Ref $remoteRef
-    }
-
-    if (-not $remoteVer) {
-        Write-Ok "Remote APP_VERSION: (no remote branch or app_version.py yet)"
-        Write-Step "Local version is ahead - pushing first"
-        Invoke-GitPush -RemoteUrl $RemoteUrl -AutoCommit
-        return
-    }
-
-    Write-Ok ("Remote APP_VERSION: v{0}" -f (Format-ProjectVersion $remoteVer))
-
-    if ($localVer -gt $remoteVer) {
-        Write-Step "Local version is ahead - pushing first"
-        Invoke-GitPush -RemoteUrl $remoteUrl -AutoCommit
-    } elseif ($localVer -lt $remoteVer) {
-        Write-Step "Local version is behind - pulling first"
-        if (-not (Ensure-UpstreamBranch -Remote $RemoteName -Branch $branch)) {
-            throw "Could not set upstream for ${RemoteName}/${branch}."
-        }
-        Invoke-GitPullMerge -Remote $RemoteName -Branch $branch
-    } else {
-        Write-Ok "Versions match (v$(Format-ProjectVersion $localVer)); no Git sync needed before build."
-    }
-}
-
 function Ensure-GitReady {
     Assert-GitInstalled
     if (-not (Test-GitRepository)) {
@@ -965,7 +838,6 @@ try {
             Invoke-GitPull
             Invoke-GitPush -RemoteUrl $remoteUrl
         }
-        "BuildSync" { Invoke-BuildSync -RemoteUrl $remoteUrl }
     }
 
     Write-Host "`nDone.`n" -ForegroundColor Green
