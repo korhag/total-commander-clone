@@ -1176,6 +1176,50 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         background-color: {c['surface0']};
         color: {c['text']};
     }}
+    QWidget#panelTabRow {{
+        background-color: {c['mantle']};
+    }}
+    QToolButton#panelTabAddButton {{
+        background-color: {c['mantle']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-bottom: none;
+        border-top-left-radius: {m['radius_lg']}px;
+        border-top-right-radius: {m['radius_lg']}px;
+        padding: {m['tab_pad_v']}px {m['tab_pad_h']}px;
+        font-size: {fs['small']}pt;
+        font-weight: bold;
+        min-width: 0px;
+    }}
+    QToolButton#panelTabAddButton:hover {{
+        background-color: {c['surface0']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-bottom: none;
+    }}
+    QToolButton#panelTabAddButton:pressed {{
+        background-color: {c['base']};
+        color: {c['text']};
+    }}
+    QTabBar#panelTabBar QToolButton#panelTabCloseButton {{
+        background-color: transparent;
+        color: {c['subtext0']};
+        border: none;
+        border-radius: {m['radius']}px;
+        padding: 0px;
+        margin: 0px;
+        font-size: {fs['small']}pt;
+        font-weight: bold;
+        min-width: 16px;
+        max-width: 16px;
+        min-height: 16px;
+        max-height: 16px;
+    }}
+    QTabBar#panelTabBar QToolButton#panelTabCloseButton:hover {{
+        background-color: {c['hover']};
+        color: {c['text']};
+        border: none;
+    }}
 
     /* ====================================================== */
     /* Custom Panel Frame (applied via objectName)             */

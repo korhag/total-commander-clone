@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.10.0] - 2026-10-14
+
+### Added
+
+- **Folder tab controls**: Each panel's tab strip has a **+** button that opens another tab on that panel and makes the panel active. Double-click the empty part of the strip to do the same. Each tab shows an **x** once a second tab is open (the last tab stays open). Right-click a tab for **New Tab**, **Close Tab**, and **Close Other Tabs**.
+
 ## [0.9.1] - 2026-10-13
 
 ### Fixed

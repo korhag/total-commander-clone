@@ -805,14 +805,24 @@ class FileManagerApp(QMainWindow):
         self._right_tabs.tabDisplayed.connect(
             lambda: self._showFilePanel("right")
         )
+        self._left_tabs.newTabRequested.connect(
+            lambda: self._onNewTabFor("left")
+        )
+        self._right_tabs.newTabRequested.connect(
+            lambda: self._onNewTabFor("right")
+        )
         self._left_panel.setStateSnapshot(lambda: self._savePanelTabs("left"))
         self._right_panel.setStateSnapshot(lambda: self._savePanelTabs("right"))
 
         self._center_buttons = self._buildCenterButtons()
 
-        panels_layout.addWidget(self._panelSideHost(self._left_tabs, self._left_stack), 1)
+        panels_layout.addWidget(
+            self._panelSideHost(self._left_tabs, self._left_stack, "left"), 1
+        )
         panels_layout.addWidget(self._center_buttons)
-        panels_layout.addWidget(self._panelSideHost(self._right_tabs, self._right_stack), 1)
+        panels_layout.addWidget(
+            self._panelSideHost(self._right_tabs, self._right_stack, "right"), 1
+        )
 
         file_panes_widget = QWidget()
         file_panes_widget.setLayout(panels_layout)
@@ -910,14 +920,47 @@ class FileManagerApp(QMainWindow):
 
     # --------------------------------------------------------
     # Method: _panelSideHost
-    # Purpose: Tab strip above the file / library / quick-view stack.
+    # Purpose: Tab strip above the file / library / quick-view stack,
+    #          with a "+" button at the right of that strip.
+    # Input: tabs (PanelTabBar), stack (QStackedWidget), side (str)
+    # Output: QWidget - The column for one panel.
     # --------------------------------------------------------
-    def _panelSideHost(self, tabs, stack):
+    def _panelSideHost(self, tabs, stack, side):
         host = QWidget()
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(tabs)
+
+        tab_row = QWidget()
+        tab_row.setObjectName("panelTabRow")
+        row = QHBoxLayout(tab_row)
+        row.setContentsMargins(0, 0, 2, 0)
+        row.setSpacing(0)
+        # The bar itself fills the strip, so a double-click on the
+        # empty part lands on PanelTabBar rather than a spacer.
+        tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row.addWidget(tabs, 1)
+
+        add_button = QToolButton(tab_row)
+        add_button.setObjectName("panelTabAddButton")
+        add_button.setText("+")
+        add_button.setToolTip(
+            "New tab (Ctrl+T)\n\n"
+            "Open another tab on this panel's current folder."
+        )
+        add_button.setAutoRaise(True)
+        add_button.setFocusPolicy(Qt.NoFocus)
+        add_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        add_button.clicked.connect(
+            lambda checked, panel_side=side: self._onNewTabFor(panel_side)
+        )
+        row.addWidget(add_button, 0, Qt.AlignVCenter)
+        if side == "right":
+            self._right_tab_add = add_button
+        else:
+            self._left_tab_add = add_button
+
+        layout.addWidget(tab_row)
         layout.addWidget(stack, 1)
         return host
 
@@ -1754,13 +1797,36 @@ class FileManagerApp(QMainWindow):
         self._showStatus("Quick view on. Ctrl+Q hides it.")
 
     # --------------------------------------------------------
+    # Method: _onNewTabFor
+    # Purpose: Open another tab on one panel and make that panel
+    #          active. The file list is shown first, so the click
+    #          still works while quick view or a library is up.
+    # Input: side (str) - "left" or "right".
+    # --------------------------------------------------------
+    def _onNewTabFor(self, side):
+        if side == "right":
+            panel = self._right_panel
+            tabs = self._right_tabs
+        else:
+            side = "left"
+            panel = self._left_panel
+            tabs = self._left_tabs
+        self._showFilePanel(side)
+        self._setActivePanel(panel)
+        tabs.newTab()
+
+    # --------------------------------------------------------
     # Method: _onNewTab
     # Purpose: Ctrl+T. Another tab on the active panel's folder.
     # --------------------------------------------------------
     def _onNewTab(self):
-        if not self._activePanelReady():
+        if self._active_panel is self._right_panel:
+            side = "right"
+        elif self._active_panel is self._left_panel:
+            side = "left"
+        else:
             return
-        self._tabsForActive().newTab()
+        self._onNewTabFor(side)
 
     def _onCloseTab(self):
         if not self._activePanelReady():

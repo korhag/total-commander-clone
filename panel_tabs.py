@@ -10,7 +10,7 @@ import copy
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QTabBar
+from PyQt5.QtWidgets import QMenu, QTabBar, QToolButton
 
 
 # ------------------------------------------------------------
@@ -62,6 +62,29 @@ def _folderLabel(path):
 
 
 # ------------------------------------------------------------
+# Class: _TabCloseButton
+# Purpose: The "x" on a folder tab. Qt's built-in close glyph is
+#          a light square, and a stylesheet hover rule on
+#          QTabBar::close-button paints over that glyph. A text
+#          mark takes its color from the theme instead.
+# ------------------------------------------------------------
+class _TabCloseButton(QToolButton):
+
+    def __init__(self, tab_bar):
+        super().__init__(tab_bar)
+        self._tab_bar = tab_bar
+        self.setObjectName("panelTabCloseButton")
+        self.setText("\u00d7")
+        self.setToolTip("Close tab")
+        self.setAutoRaise(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.clicked.connect(self._onClicked)
+
+    def _onClicked(self):
+        self._tab_bar._closeFromButton(self)
+
+
+# ------------------------------------------------------------
 # Class: PanelTabBar
 # Purpose: The tab strip above one file panel.
 # ------------------------------------------------------------
@@ -69,6 +92,8 @@ class PanelTabBar(QTabBar):
 
     # Emitted after a tab switch has loaded that tab's folder.
     tabDisplayed = pyqtSignal()
+    # The window opens the tab, so the panel it belongs to becomes active.
+    newTabRequested = pyqtSignal()
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
@@ -163,6 +188,49 @@ class PanelTabBar(QTabBar):
         return True
 
     # --------------------------------------------------------
+    # Method: closeOtherTabs
+    # Purpose: Leave one tab open and drop the rest.
+    # Input: index (int) - The tab that stays.
+    # Output: True when other tabs were closed.
+    # --------------------------------------------------------
+    def closeOtherTabs(self, index):
+        count = self.count()
+        if count <= 1:
+            return False
+        if isinstance(index, bool) or not isinstance(index, int):
+            return False
+        if not (0 <= index < count) or index >= len(self._states):
+            return False
+
+        if index == self._current:
+            self._rememberCurrent()
+        kept = copy.deepcopy(self._states[index])
+        if not isinstance(kept, dict):
+            kept = {}
+
+        self._guard = True
+        try:
+            for tab_index in range(count - 1, index, -1):
+                self.removeTab(tab_index)
+            for tab_index in range(index - 1, -1, -1):
+                self.removeTab(tab_index)
+            self._states = [kept]
+            self._current = 0
+            path = kept.get("current_path") or ""
+            if not isinstance(path, str):
+                path = ""
+            self.setTabText(0, _folderLabel(path))
+            self.setTabToolTip(0, path)
+            if self.currentIndex() != 0:
+                self.setCurrentIndex(0)
+        finally:
+            self._guard = False
+
+        self._syncCloseButtons()
+        self._restoreCurrent()
+        return True
+
+    # --------------------------------------------------------
     # Method: selectRelative
     # Purpose: Move to the next or previous tab, wrapping around.
     # --------------------------------------------------------
@@ -221,6 +289,41 @@ class PanelTabBar(QTabBar):
                 self.closeTab(index)
                 return
         super().mouseReleaseEvent(event)
+
+    # --------------------------------------------------------
+    # Method: mouseDoubleClickEvent
+    # Purpose: A double-click on the empty part of the strip
+    #          asks the window for another tab.
+    # --------------------------------------------------------
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and self.tabAt(event.pos()) < 0:
+            self.newTabRequested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    # --------------------------------------------------------
+    # Method: contextMenuEvent
+    # Purpose: Right-click menu for a new tab, closing this
+    #          tab, or closing every tab except this one.
+    # --------------------------------------------------------
+    def contextMenuEvent(self, event):
+        index = self.tabAt(event.pos())
+        only_one = self.count() <= 1
+        menu = QMenu(self)
+        new_action = menu.addAction("New Tab")
+        close_action = menu.addAction("Close Tab")
+        others_action = menu.addAction("Close Other Tabs")
+        close_action.setEnabled(index >= 0 and not only_one)
+        others_action.setEnabled(index >= 0 and not only_one)
+        chosen = menu.exec_(event.globalPos())
+        if chosen is new_action:
+            self.newTabRequested.emit()
+        elif chosen is close_action:
+            self.closeTab(index)
+        elif chosen is others_action:
+            self.closeOtherTabs(index)
+        event.accept()
 
     def _appendAndSwitch(self, state):
         if not isinstance(state, dict):
@@ -291,5 +394,25 @@ class PanelTabBar(QTabBar):
         self.setTabText(index, _folderLabel(path))
         self.setTabToolTip(index, path)
 
+    def _closeFromButton(self, button):
+        for index in range(self.count()):
+            if self.tabButton(index, QTabBar.RightSide) is button:
+                self.closeTab(index)
+                return
+
+    # --------------------------------------------------------
+    # Method: _syncCloseButtons
+    # Purpose: Show an "x" on every tab once a second tab exists.
+    #          The last tab has no close button.
+    # --------------------------------------------------------
     def _syncCloseButtons(self):
-        self.setTabsClosable(self.count() > 1)
+        show = self.count() > 1
+        for index in range(self.count()):
+            existing = self.tabButton(index, QTabBar.RightSide)
+            if not show:
+                if existing is not None:
+                    self.setTabButton(index, QTabBar.RightSide, None)
+                continue
+            if isinstance(existing, _TabCloseButton):
+                continue
+            self.setTabButton(index, QTabBar.RightSide, _TabCloseButton(self))

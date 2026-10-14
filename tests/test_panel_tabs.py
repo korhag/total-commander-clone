@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
@@ -79,6 +79,56 @@ class TestPanelTabs(unittest.TestCase):
     def test_last_tab_stays_open(self):
         self.assertFalse(self.tabs.closeTab())
         self.assertEqual(self.tabs.count(), 1)
+        self.assertIsNone(self.tabs.tabButton(0, self.tabs.RightSide))
+        self.assertFalse(self.tabs.closeOtherTabs(0))
+
+    def test_close_button_closes_that_tab(self):
+        self.tabs.newTab()
+        self.assertTrue(self.panel.navigateTo(self.folder_b))
+        button = self.tabs.tabButton(1, self.tabs.RightSide)
+        self.assertIsNotNone(button)
+        QTest.mouseClick(button, Qt.LeftButton)
+        self.assertEqual(self.tabs.count(), 1)
+        self.assertEqual(
+            os.path.normcase(self.panel.currentPath()),
+            os.path.normcase(self.folder_a),
+        )
+        self.assertIsNone(self.tabs.tabButton(0, self.tabs.RightSide))
+
+    def test_close_other_tabs_keeps_the_chosen_folder(self):
+        self.tabs.newTab()
+        self.assertTrue(self.panel.navigateTo(self.folder_b))
+        self.tabs.newTab()
+        self.assertTrue(self.panel.navigateTo(self.root))
+        self.assertEqual(self.tabs.count(), 3)
+
+        self.assertTrue(self.tabs.closeOtherTabs(1))
+        self.assertEqual(self.tabs.count(), 1)
+        self.assertEqual(
+            os.path.normcase(self.panel.currentPath()),
+            os.path.normcase(self.folder_b),
+        )
+        self.assertIsNone(self.tabs.tabButton(0, self.tabs.RightSide))
+
+    def test_double_click_on_empty_strip_asks_for_a_new_tab(self):
+        self.tabs.resize(480, 36)
+        hits = []
+        self.tabs.newTabRequested.connect(lambda: hits.append("empty"))
+        empty = None
+        for x in range(self.tabs.width() - 1, 0, -1):
+            pos = QPoint(x, self.tabs.height() // 2)
+            if self.tabs.tabAt(pos) < 0:
+                empty = pos
+                break
+        self.assertIsNotNone(empty)
+        QTest.mouseDClick(self.tabs, Qt.LeftButton, Qt.NoModifier, empty)
+        self.assertEqual(hits, ["empty"])
+        self.assertEqual(self.tabs.count(), 1)
+
+        QTest.mouseDClick(
+            self.tabs, Qt.LeftButton, Qt.NoModifier, self.tabs.tabRect(0).center()
+        )
+        self.assertEqual(hits, ["empty"])
 
     def test_middle_click_closes_a_tab(self):
         self.tabs.newTab()
@@ -194,3 +244,16 @@ class TestPanelTabsInWindow(unittest.TestCase):
         saved = self.settings.getPanelState("left")
         self.assertEqual(saved["active"], 2)
         self.assertEqual(len(saved["tabs"]), 3)
+
+    def test_plus_button_opens_a_tab_on_that_panel(self):
+        right = self.window._right_panel
+        self.assertTrue(right.navigateTo(self.folder))
+        QTest.qWait(0)
+        self.window._setActivePanel(self.window._left_panel)
+        self.assertIs(self.window._active_panel, self.window._left_panel)
+
+        QTest.mouseClick(self.window._right_tab_add, Qt.LeftButton)
+        QTest.qWait(0)
+        self.assertEqual(self.window._right_tabs.count(), 2)
+        self.assertEqual(self.window._left_tabs.count(), 1)
+        self.assertIs(self.window._active_panel, right)
