@@ -1,6 +1,6 @@
 """
-Shared folder tree size / count helpers and a background worker.
-Used by Properties and Compare dialog.
+Shared folder tree size / count helpers and background workers.
+Used by Properties, Compare, and the drive-space status label.
 """
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 
 from PyQt5.QtCore import QThread, pyqtSignal
+
+from drive_list import readDriveSpace
 
 
 # ------------------------------------------------------------
@@ -85,3 +87,33 @@ class FolderSizeWorker(QThread):
         except Exception as exc:
             if not self._cancelled:
                 self.failed.emit(str(exc))
+
+
+# ------------------------------------------------------------
+# Class: DriveSpaceWorker
+# Purpose: Read used and free space off the UI thread. A stalled
+#          network or cloud mount must not freeze the window.
+# ------------------------------------------------------------
+class DriveSpaceWorker(QThread):
+
+    # path, DriveSpace or None
+    finishedOk = pyqtSignal(str, object)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        if self._cancelled:
+            return
+        try:
+            space = readDriveSpace(self._path)
+        except Exception:
+            space = None
+        if self._cancelled:
+            return
+        self.finishedOk.emit(self._path, space)

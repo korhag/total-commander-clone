@@ -19,7 +19,15 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QUrl, QTimer, QRect, QSize, QEvent, QThread, pyqtSignal
 from PyQt5.QtGui import QKeySequence, QDesktopServices, QIcon
 
-from file_panel import FilePanel, DEFAULT_DATE_MODIFIED_FORMAT, resolve_date_modified_format_key
+from file_panel import (
+    FilePanel,
+    DEFAULT_DATE_MODIFIED_FORMAT,
+    formatFileSize,
+    resolve_date_modified_format_key,
+)
+from drive_list import driveLabelForPath, listDrives
+from folder_stats import DriveSpaceWorker
+from recursive_scan_worker import retireThread, waitForThreads
 from file_operations import renameFile
 from file_operation_queue import FileOperationQueue
 from transfers_bar import TransfersBar, TransfersDetailsDialog
@@ -52,6 +60,7 @@ from git_credentials_dialog import GitCredentialsDialog
 # ------------------------------------------------------------
 TRANSFER_SHUTDOWN_WAIT_MS = 10000
 UPDATE_CHECK_SHUTDOWN_WAIT_MS = 5000
+DRIVE_SPACE_SHUTDOWN_WAIT_MS = 500
 
 
 # ------------------------------------------------------------
@@ -176,6 +185,10 @@ class FileManagerApp(QMainWindow):
         self._clipboard_paths = []
         self._clipboard_mode = None
         self._viewer_window = None
+        self._drive_space_worker = None
+        self._retired_drive_space_threads = set()
+        self._drive_space_path = ""
+        self._drive_space_closed = False
 
         self._initWindow()
         self._initStatusBar()
@@ -897,6 +910,10 @@ class FileManagerApp(QMainWindow):
 
         self._left_panel.selectionChanged.connect(self._updateStatusBar)
         self._right_panel.selectionChanged.connect(self._updateStatusBar)
+        self._left_panel.listingFinished.connect(self._onPanelListingFinished)
+        self._right_panel.listingFinished.connect(self._onPanelListingFinished)
+        self._left_panel.pathChanged.connect(self._onActivePanelPathChanged)
+        self._right_panel.pathChanged.connect(self._onActivePanelPathChanged)
         self._left_panel.selectionChanged.connect(
             lambda: self._refreshQuickView(self._left_panel)
         )
@@ -1280,6 +1297,10 @@ class FileManagerApp(QMainWindow):
         self._status_info.setObjectName("statusLabel")
         self._status_bar.addWidget(self._status_info, 1)
 
+        self._drive_space_label = QLabel("")
+        self._drive_space_label.setObjectName("statusLabel")
+        self._status_bar.addPermanentWidget(self._drive_space_label)
+
         self._version_label = QLabel(f"v{APP_VERSION}")
         self._version_label.setObjectName("statusLabel")
         self._version_label.setToolTip(f"{APP_NAME} {APP_VERSION}")
@@ -1425,6 +1446,7 @@ class FileManagerApp(QMainWindow):
         self._active_panel = panel
         panel.setActive(True)
         self._updateStatusBar()
+        self._refreshDriveSpace()
         if hasattr(self, "_btn_copy_dir"):
             self._updateDirectionButtons()
 
@@ -3237,11 +3259,138 @@ class FileManagerApp(QMainWindow):
                 parts.append(f"{files} file(s)")
             if dirs:
                 parts.append(f"{dirs} folder(s)")
-            from file_panel import formatFileSize
             parts.append(f"Total: {formatFileSize(total_size)}")
             self._status_info.setText(" | ".join(parts))
         else:
             self._status_info.setText("Ready")
+
+    # --------------------------------------------------------
+    # Method: _activePanelSideName
+    # Purpose: "Left" or "Right" for the panel that has focus.
+    # --------------------------------------------------------
+    def _activePanelSideName(self):
+        if self._active_panel is self._left_panel:
+            return "Left"
+        return "Right"
+
+    # --------------------------------------------------------
+    # Method: _driveSpacePrefix
+    # Purpose: "Left · /" style lead-in for the status label.
+    #          The drive name matches the panel dropdown.
+    # --------------------------------------------------------
+    def _driveSpacePrefix(self, path):
+        side = self._activePanelSideName()
+        drive = driveLabelForPath(listDrives(), path) if path else ""
+        if not drive:
+            return side
+        return f"{side} \u00b7 {drive}"
+
+    # --------------------------------------------------------
+    # Method: _onPanelListingFinished
+    # Purpose: A folder reload finished (open, tab switch, F5,
+    #          or a refresh after a transfer). Re-read space only
+    #          for the panel that is active.
+    # --------------------------------------------------------
+    def _onPanelListingFinished(self):
+        if self.sender() is not self._active_panel:
+            return
+        self._refreshDriveSpace()
+
+    # --------------------------------------------------------
+    # Method: _onActivePanelPathChanged
+    # Purpose: The active panel opened another folder. A listing
+    #          that already started a read for this path is left
+    #          alone. Recursive cache hits never emit
+    #          listingFinished, so this still updates the label.
+    # --------------------------------------------------------
+    def _onActivePanelPathChanged(self, path):
+        if self.sender() is not self._active_panel:
+            return
+        # A flat listing still in flight emits listingFinished when it
+        # finishes, and that starts the read. Starting one here as well
+        # would stat a slow mount twice.
+        if self._active_panel.sourceModel().isLoading():
+            return
+        if path and path == self._drive_space_path:
+            return
+        self._refreshDriveSpace()
+
+    # --------------------------------------------------------
+    # Method: _refreshDriveSpace
+    # Purpose: Show which drive the active panel is on, then
+    #          read used and free space on a background thread.
+    # --------------------------------------------------------
+    def _refreshDriveSpace(self):
+        if not hasattr(self, "_drive_space_label"):
+            return
+        panel = self._active_panel
+        if panel is None:
+            return
+        path = panel.currentPath() or ""
+        self._drive_space_path = path
+        self._drive_space_label.setToolTip(path)
+        if not path:
+            self._drive_space_label.setText("")
+            self._retireDriveSpaceWorker()
+            return
+        prefix = self._driveSpacePrefix(path)
+        self._drive_space_label.setText(f"{prefix} \u2014 reading\u2026")
+        self._retireDriveSpaceWorker()
+        worker = DriveSpaceWorker(path)
+        worker.finishedOk.connect(self._onDriveSpaceRead)
+        self._drive_space_worker = worker
+        worker.start()
+
+    # --------------------------------------------------------
+    # Method: _onDriveSpaceRead
+    # Purpose: Apply a finished space reading. A result for a
+    #          folder the active panel has since left is ignored.
+    # --------------------------------------------------------
+    def _onDriveSpaceRead(self, path, space):
+        if getattr(self, "_drive_space_closed", False):
+            return
+        if not self._active_panel:
+            return
+        if path != self._active_panel.currentPath():
+            return
+        prefix = self._driveSpacePrefix(path)
+        if space is None:
+            detail = "space unavailable"
+        else:
+            detail = (
+                f"{formatFileSize(space.used)} used, "
+                f"{formatFileSize(space.free)} free of {formatFileSize(space.total)}"
+            )
+        self._drive_space_label.setText(f"{prefix} \u2014 {detail}")
+
+    # --------------------------------------------------------
+    # Method: _retireDriveSpaceWorker
+    # Purpose: Drop the in-flight space read without waiting.
+    #          Its result is ignored because the slot is disconnected.
+    # --------------------------------------------------------
+    def _retireDriveSpaceWorker(self):
+        worker = self._drive_space_worker
+        self._drive_space_worker = None
+        if worker is None:
+            return
+        try:
+            worker.finishedOk.disconnect(self._onDriveSpaceRead)
+        except TypeError:
+            pass
+        retireThread(worker, self._retired_drive_space_threads)
+
+    # --------------------------------------------------------
+    # Method: _stopDriveSpaceWorker
+    # Purpose: Cancel the space read when the window closes so
+    #          it cannot touch the status bar after it is gone.
+    # --------------------------------------------------------
+    def _stopDriveSpaceWorker(self):
+        self._drive_space_closed = True
+        self._retireDriveSpaceWorker()
+        waitForThreads(
+            list(self._retired_drive_space_threads),
+            DRIVE_SPACE_SHUTDOWN_WAIT_MS,
+        )
 
     # --------------------------------------------------------
     # Method: _stopTransfersForClose
@@ -3290,6 +3439,7 @@ class FileManagerApp(QMainWindow):
             event.ignore()
             return
         self._detachUpdateCheckWorker()
+        self._stopDriveSpaceWorker()
 
         app = QApplication.instance()
         if app is not None:
@@ -3318,6 +3468,8 @@ class FileManagerApp(QMainWindow):
         })
 
         self._warnIfSaveFailed(self._settings.saveAll())
+        self._left_panel.shutdownBackgroundWork()
+        self._right_panel.shutdownBackgroundWork()
         event.accept()
 
     # --------------------------------------------------------

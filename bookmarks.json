@@ -1,0 +1,38 @@
+{
+    "format": "total-commander-clone-bookmarks",
+    "format_version": 1,
+    "explicit_empty": false,
+    "bookmarks": [
+        {
+            "type": "bookmark",
+            "name": "Downloads",
+            "path": "/home/korhag/Downloads",
+            "kind": "folder"
+        },
+        {
+            "type": "group",
+            "name": "PARA",
+            "expanded": false,
+            "children": [
+                {
+                    "type": "bookmark",
+                    "name": "PARA",
+                    "path": "/home/korhag/PARA",
+                    "kind": "folder"
+                },
+                {
+                    "type": "bookmark",
+                    "name": "Workshop",
+                    "path": "/home/korhag/PARA/02-Areas/Workshop",
+                    "kind": "folder"
+                }
+            ]
+        },
+        {
+            "type": "bookmark",
+            "name": "3D-designs",
+            "path": "/home/korhag/PARA/02-Areas/Workshop/3D-designs",
+            "kind": "folder"
+        }
+    ]
+}

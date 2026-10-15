@@ -10,11 +10,11 @@ import os
 import platform
 import re
 import stat
-import string
 import subprocess
 import time
 from datetime import datetime
 
+from drive_list import findDriveForPath, isRemotePath, listDrives
 from filter_spec import FilterSpec
 from theme import themeColor
 from name_filter import (
@@ -24,7 +24,13 @@ from name_filter import (
     parse_extensions,
     parse_filter_terms,
 )
-from recursive_scan_worker import RecursiveScanThread
+from recursive_scan_worker import (
+    FolderListingThread,
+    RecursiveScanThread,
+    retireThread,
+    skipHidden,
+    waitForThreads,
+)
 from thumbnail_loader import ThumbnailLoader, isThumbnailCandidate
 
 
@@ -43,6 +49,15 @@ DATE_MODIFIED_FORMATS = {
     "mm_dd_yyyy": ("%m/%d/%Y", "MM/DD/YYYY"),
 }
 DEFAULT_DATE_MODIFIED_FORMAT = "yyyy_mm_dd_hm"
+
+# A local folder listing usually finishes well under this. Anything
+# slower (a cold cloud mount) keeps running in the background so the
+# window stays responsive.
+FLAT_LISTING_SYNC_WAIT_MS = 150
+
+# On window close, give background reads this long to stop before
+# the widgets that own them are destroyed.
+THREAD_SHUTDOWN_WAIT_MS = 2000
 
 
 def resolve_date_modified_format_key(key):
@@ -87,14 +102,6 @@ def natural_sort_key(name):
             parts.append((1, part.lower()))
     return parts
 
-
-# ------------------------------------------------------------
-# Helper: list Windows drive letters (e.g. ["C:\\", "D:\\"])
-# ------------------------------------------------------------
-def getWindowsDrives():
-    if os.name != "nt":
-        return []
-    return [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QLineEdit,
@@ -267,7 +274,9 @@ def build_entry_tooltip_html(entry, recursive=False):
     display_title = html.escape(os.path.basename(full) if full else name)
 
     if is_dir:
-        qb = _folder_immediate_files_size_bytes(full)
+        # A network or cloud folder can take seconds to list. Skip the
+        # size line there so hovering a row cannot freeze the window.
+        qb = None if isRemotePath(full) else _folder_immediate_files_size_bytes(full)
         if qb is not None:
             sz = formatFileSize(qb)
             rows_html.insert(
@@ -295,7 +304,9 @@ def build_entry_tooltip_html(entry, recursive=False):
             f"<td style='padding:2px 0;'>{html.escape(sz)}</td></tr>",
         )
         db = QMimeDatabase()
-        mt = db.mimeTypeForFile(full)
+        # MatchExtension never reads the file. The default mode reads
+        # the start of the file, which on a cloud mount means a download.
+        mt = db.mimeTypeForFile(full, QMimeDatabase.MatchExtension)
         raw_name = mt.name()
         raw_comment = mt.comment() or ""
         rows_html.append(
@@ -349,29 +360,54 @@ class DriveLineEdit(QLineEdit):
     def __init__(self, combo, parent=None):
         super().__init__(parent)
         self._drive_combo = combo
+        self._popup_was_open = False
 
     def mousePressEvent(self, event):
+        combo = self._drive_combo
+        self._popup_was_open = bool(
+            combo is not None and combo.view().isVisible()
+        )
+        super().mousePressEvent(event)
+
+    # --------------------------------------------------------
+    # Method: mouseReleaseEvent
+    # Purpose: Open the drive list when the click is released
+    #          inside the field. Opening on press lets that same
+    #          click fall on the current item and close the list.
+    # --------------------------------------------------------
+    def mouseReleaseEvent(self, event):
+        combo = self._drive_combo
+        was_open = self._popup_was_open
+        self._popup_was_open = False
         if (
             event.button() == Qt.LeftButton
-            and self._drive_combo is not None
-            and self._drive_combo.isVisible()
+            and combo is not None
+            and combo.isVisible()
+            and not was_open
+            and self.rect().contains(event.pos())
         ):
-            self._drive_combo.showPopup()
-        super().mousePressEvent(event)
+            combo.showPopup()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 # ============================================================
 # Class: DrivePickerCombo
 # Purpose: Drive QComboBox that opens the list on any left-click on
 #          the widget (e.g. drop-down button area inside the control).
+#          The list opens on mouse release, not press: opening on
+#          press lets the same click land on the current item and
+#          close the list immediately.
 #          Optional on_before_popup runs when the list is about to open
-#          (e.g. re-scan drive letters on Windows).
+#          (re-scan drives and mounts).
 # ============================================================
 class DrivePickerCombo(QComboBox):
 
     def __init__(self, parent=None, on_before_popup=None):
         super().__init__(parent)
         self._on_before_popup = on_before_popup
+        self._popup_was_open = False
 
     def showPopup(self):
         if self._on_before_popup is not None:
@@ -380,8 +416,30 @@ class DrivePickerCombo(QComboBox):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.isVisible():
-            self.showPopup()
+            self._popup_was_open = self.view().isVisible()
+            self.setFocus(Qt.MouseFocusReason)
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    # --------------------------------------------------------
+    # Method: mouseReleaseEvent
+    # Purpose: Open the list once the click is released inside
+    #          the control, unless this click was closing it.
+    # --------------------------------------------------------
+    def mouseReleaseEvent(self, event):
+        was_open = self._popup_was_open
+        self._popup_was_open = False
+        if (
+            event.button() == Qt.LeftButton
+            and self.isVisible()
+            and not was_open
+            and self.rect().contains(event.pos())
+        ):
+            self.showPopup()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 # ============================================================
@@ -394,6 +452,9 @@ class FileSystemModel(QAbstractTableModel):
 
     recursiveScanRequested = pyqtSignal(str, int)
     recursiveScanAbortRequested = pyqtSignal()
+    # Emitted after a flat listing is applied. The int is the scan
+    # generation, so a late result can be ignored.
+    listingFinished = pyqtSignal(int)
 
     COLUMNS = ["Name", "Size", "Type", "Date Modified"]
     COLUMN_TOOLTIPS = [
@@ -423,6 +484,10 @@ class FileSystemModel(QAbstractTableModel):
         self._quiet_scan = False
         self._listing_from_cache = False
         self._load_error = ""
+        self._loading = False
+        self._listing_thread = None
+        self._retired_threads = set()
+        self._applied_listing_gen = -1
 
     # --------------------------------------------------------
     # Method: showHiddenFiles
@@ -713,19 +778,7 @@ class FileSystemModel(QAbstractTableModel):
             self.loadDirectory(self._current_path, force_rescan=True)
 
     def _skip_hidden_stat(self, full_path, name):
-        if self._show_hidden:
-            return False
-        if name.startswith("."):
-            return True
-        if os.name == "nt":
-            try:
-                st = os.stat(full_path)
-                attrs = getattr(st, "st_file_attributes", 0)
-                if attrs & stat.FILE_ATTRIBUTE_HIDDEN:
-                    return True
-            except OSError:
-                return True
-        return False
+        return skipHidden(full_path, name, self._show_hidden)
 
     def _append_entry(self, full_path, display_name, is_dir, size, mod_time):
         file_type = getFileTypeDescription(full_path, is_dir)
@@ -749,17 +802,20 @@ class FileSystemModel(QAbstractTableModel):
         path = os.path.normpath(path)
         self._thumbnails.cancelPending()
         self._thumb_row_hints.clear()
+        # Bump first so a scan cancelled below cannot apply afterwards.
+        self._scan_generation += 1
+        gen = self._scan_generation
+        self._retireListingThread()
+        self._loading = False
         self.recursiveScanAbortRequested.emit()
         self._quiet_scan = False
         self._listing_from_cache = False
         self._load_error = ""
 
         if not self._recursive:
-            self._loadDirectoryFlatSync(path)
+            self._loadDirectoryFlat(path, gen)
             return
 
-        self._scan_generation += 1
-        gen = self._scan_generation
         self._current_path = path
 
         if not force_rescan:
@@ -785,36 +841,124 @@ class FileSystemModel(QAbstractTableModel):
         self.endResetModel()
         self.recursiveScanRequested.emit(path, gen)
 
-    def _loadDirectoryFlatSync(self, path):
-        self.beginResetModel()
+    def isLoading(self):
+        """True while a flat folder read is still running in the background."""
+        return bool(self._loading)
+
+    # --------------------------------------------------------
+    # Method: _pathsEqual
+    # --------------------------------------------------------
+    def _pathsEqual(self, left, right):
+        if not left or not right:
+            return False
+        return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
+            os.path.normpath(right)
+        )
+
+    # --------------------------------------------------------
+    # Method: _loadDirectoryFlat
+    # Purpose: Start a one-level listing. Fast folders are applied
+    #          before this returns. Slow ones set isLoading() and
+    #          apply when the thread finishes. Reloading the folder
+    #          that is already open keeps the old rows on screen.
+    # --------------------------------------------------------
+    def _loadDirectoryFlat(self, path, gen):
+        same_folder = self._pathsEqual(self._current_path, path)
         self._current_path = path
-        self._entries = []
-        self._loadDirectoryFlat(path)
+        self._loading = True
+        if not same_folder:
+            self.beginResetModel()
+            self._entries = []
+            self.endResetModel()
+
+        self._retireListingThread()
+        thread = FolderListingThread(gen, path, self._show_hidden)
+        thread.finishedListing.connect(self._onFlatListingReady)
+        self._listing_thread = thread
+        thread.start()
+        if not thread.wait(FLAT_LISTING_SYNC_WAIT_MS):
+            return
+
+        self._listing_thread = None
+        cancelled = thread.was_cancelled
+        entries = thread.entries
+        error = thread.error
+        thread.deleteLater()
+        self._loading = False
+        if not cancelled:
+            self._applyFlatResult(gen, entries, error)
+
+    # --------------------------------------------------------
+    # Method: _retireListingThread
+    # Purpose: Drop the in-flight listing without waiting for it.
+    #          A newer load has already taken the next generation,
+    #          so this thread's result is ignored when it arrives.
+    # --------------------------------------------------------
+    def _retireListingThread(self):
+        thread = self._listing_thread
+        self._listing_thread = None
+        if thread is None:
+            return
+        retireThread(thread, self._retired_threads)
+
+    # --------------------------------------------------------
+    # Method: _onFlatListingReady
+    # Purpose: Apply a background listing if it is still the one
+    #          the panel is waiting for.
+    # --------------------------------------------------------
+    def _onFlatListingReady(self, scan_id, entries, error):
+        thread = self.sender()
+        if thread is not None and thread is self._listing_thread:
+            self._listing_thread = None
+            thread.deleteLater()
+        if thread is not None and getattr(thread, "was_cancelled", False):
+            return
+        self._applyFlatResult(scan_id, entries, error)
+
+    # --------------------------------------------------------
+    # Method: _applyFlatResult
+    # Purpose: Replace the rows with a finished flat listing.
+    #          Ignored when a newer load has started, or when this
+    #          generation was already applied after a short wait.
+    # --------------------------------------------------------
+    def _applyFlatResult(self, gen, entries, error):
+        if gen != self._scan_generation or gen == self._applied_listing_gen:
+            return
+        self._applied_listing_gen = gen
+        self._loading = False
+        self._load_error = error or ""
+        self.beginResetModel()
+        self._entries = list(entries)
         self._entries.sort(
             key=lambda e: (not e["is_dir"], natural_sort_key(e["name"]))
         )
         self.endResetModel()
+        self.listingFinished.emit(gen)
 
-    def _loadDirectoryFlat(self, path):
-        try:
-            items = os.listdir(path)
-        except OSError as exc:
-            self._load_error = exc.strerror or str(exc)
-            return
+    # --------------------------------------------------------
+    # Method: takeListingThreads
+    # Purpose: Hand back every flat-listing thread so the window
+    #          can wait for them on close. Later results are ignored.
+    # --------------------------------------------------------
+    def takeListingThreads(self):
+        self._scan_generation += 1
+        threads = list(self._retired_threads)
+        self._retired_threads.clear()
+        thread = self._listing_thread
+        self._listing_thread = None
+        if thread is not None:
+            thread.cancel()
+            threads.append(thread)
+        self._loading = False
+        return threads
 
-        for name in items:
-            if self._skip_hidden_stat(os.path.join(path, name), name):
-                continue
-
-            full_path = os.path.join(path, name)
-            try:
-                st = os.stat(full_path)
-                is_dir = stat.S_ISDIR(st.st_mode)
-                size = st.st_size if not is_dir else -1
-                mod_time = st.st_mtime
-                self._append_entry(full_path, name, is_dir, size, mod_time)
-            except (PermissionError, OSError):
-                continue
+    # --------------------------------------------------------
+    # Method: shutdownListing
+    # Purpose: Stop flat listings. Used by tests and by the panel
+    #          when the window closes.
+    # --------------------------------------------------------
+    def shutdownListing(self):
+        waitForThreads(self.takeListingThreads(), THREAD_SHUTDOWN_WAIT_MS)
 
     # --------------------------------------------------------
     # Method: currentPath
@@ -1536,6 +1680,8 @@ class FilePanel(QWidget):
     filesDropped = pyqtSignal(list, str, bool)
     activated = pyqtSignal()
     dateModifiedFormatChanged = pyqtSignal(str)
+    # Emitted after this panel accepts a finished folder listing.
+    listingFinished = pyqtSignal()
 
     # --------------------------------------------------------
     # Method: __init__
@@ -1550,6 +1696,11 @@ class FilePanel(QWidget):
         self._rename_edit = None
         self._scan_thread = None
         self._scan_progress = None
+        self._retired_threads = set()
+        self._pending_reselect = None
+        self._pending_scroll = None
+        self._scroll_to_top_when_loaded = False
+        self._drive_popup_was_open = False
         self._column_width_clamping = False
         self._freeze_column_widths = False
         self._column_width_locked = {k: False for k in self.COLUMN_VISIBILITY_KEYS}
@@ -1708,13 +1859,13 @@ class FilePanel(QWidget):
         self._btn_home.setText("\U0001F3E0")
         self._btn_home.clicked.connect(self._goHome)
 
-        self._drive_combo = DrivePickerCombo(
-            on_before_popup=self._refreshDrives if os.name == "nt" else None,
-        )
+        self._drive_entries = []
+        self._drive_combo = DrivePickerCombo(on_before_popup=self._refreshDrives)
         self._drive_combo.setObjectName("driveCombo")
         self._drive_combo.setToolTip(
-            "Drive\n\nChoose a drive letter to jump to its root. "
-            "On Windows the list refreshes when you open the menu."
+            "Drive\n\nChoose a drive letter (Windows), or / , Home, or a mounted "
+            "folder such as a USB stick or cloud mount (Linux). "
+            "The list refreshes when you open the menu."
         )
         self._drive_combo.setFixedSize(58, NAV_BAR_HEIGHT)
         self._drive_combo.setMinimumContentsLength(2)
@@ -1725,19 +1876,16 @@ class FilePanel(QWidget):
         drive_line_edit.setFrame(False)
         self._drive_combo.setLineEdit(drive_line_edit)
         self._drive_line_edit = drive_line_edit
-        drives = getWindowsDrives()
-        if drives:
-            self._drive_combo.addItems(drives)
-            self._drive_combo.currentIndexChanged.connect(self._onDriveChanged)
-        else:
-            self._drive_combo.setVisible(False)
+        # activated (not currentIndexChanged) so re-picking the shown entry
+        # still navigates, e.g. "~" while inside a subfolder of Home.
+        self._drive_combo.activated[int].connect(self._onDriveChanged)
 
         self._drive_arrow = QLabel("\u25BC")
         self._drive_arrow.setObjectName("driveArrow")
         self._drive_arrow.setFixedSize(14, NAV_BAR_HEIGHT)
         self._drive_arrow.setCursor(Qt.PointingHandCursor)
-        self._drive_arrow.mousePressEvent = self._onDriveArrowClicked
-        self._drive_arrow.setVisible(bool(drives))
+        self._drive_arrow.mousePressEvent = self._onDriveArrowPressed
+        self._drive_arrow.mouseReleaseEvent = self._onDriveArrowClicked
         self._drive_arrow.setToolTip(
             "Open drive list\n\nClick to show the same drive menu as the field beside it."
         )
@@ -1749,6 +1897,7 @@ class FilePanel(QWidget):
         drive_container_layout.setSpacing(0)
         drive_container_layout.addWidget(self._drive_combo, 0, Qt.AlignVCenter)
         drive_container_layout.addWidget(self._drive_arrow, 0, Qt.AlignVCenter)
+        self._refreshDrives()
 
         self._filter_edit = QLineEdit()
         self._filter_edit.setObjectName("panelFilterEdit")
@@ -2464,6 +2613,7 @@ class FilePanel(QWidget):
             self._cancelRecursiveScanThread
         )
         self._source_model.recursiveScanRequested.connect(self._onRecursiveScanRequested)
+        self._source_model.listingFinished.connect(self._onListingFinished)
 
         self._table.viewportResized.connect(self._onTableViewportResized)
         self._table.horizontalHeader().sectionResized.connect(self._onColumnSectionResized)
@@ -2537,6 +2687,9 @@ class FilePanel(QWidget):
             self._history.append(path)
             self._history_index = len(self._history) - 1
 
+        self._pending_reselect = None
+        self._pending_scroll = None
+        self._scroll_to_top_when_loaded = True
         self._source_model.loadDirectory(path)
         self._path_edit.setText(path)
         self._updateNavButtons()
@@ -2544,6 +2697,9 @@ class FilePanel(QWidget):
         self._syncDriveCombo(path)
         self._watchCurrentFolder()
         self.pathChanged.emit(path)
+        if self._source_model.isLoading():
+            return True
+        self._scroll_to_top_when_loaded = False
         QTimer.singleShot(0, self._scrollFileTableToTop)
         return True
 
@@ -2557,6 +2713,8 @@ class FilePanel(QWidget):
         current = self._source_model.currentPath()
         if current:
             selected = self.selectedPaths()
+            bar = self._table.verticalScrollBar()
+            scroll_value = bar.value() if bar is not None else None
             # Invalidate cache when the user explicitly forces a rescan.
             if force_rescan and self._source_model.isRecursive():
                 try:
@@ -2567,8 +2725,13 @@ class FilePanel(QWidget):
                     )
                 except Exception:
                     pass
+            self._scroll_to_top_when_loaded = False
             self._source_model.loadDirectory(current, force_rescan=force_rescan)
-            self._reselectPaths(selected)
+            if self._source_model.isLoading():
+                self._pending_reselect = selected
+                self._pending_scroll = scroll_value
+            else:
+                self._reselectPaths(selected)
             self._updateStatusLabel()
 
     # --------------------------------------------------------
@@ -2694,6 +2857,9 @@ class FilePanel(QWidget):
         scroll_value = bar.value() if bar is not None else 0
 
         self.refresh(force_rescan=False)
+        if self._source_model.isLoading():
+            self._pending_scroll = scroll_value
+            return
 
         if bar is None:
             return
@@ -3393,49 +3559,88 @@ class FilePanel(QWidget):
         except OSError:
             pass
 
+    # --------------------------------------------------------
+    # Method: _onDriveChanged
+    # Purpose: Open the folder of the drive entry the user picked.
+    #          If it cannot be opened (for example a cloud mount that
+    #          was stopped), stay put and say so.
+    # --------------------------------------------------------
     def _onDriveChanged(self, index):
-        if index < 0 or not self._drive_combo.isVisible():
+        target = self._drive_combo.itemData(index)
+        if not target:
             return
-        drive = self._drive_combo.currentText()
-        if drive and os.path.isdir(drive):
-            self.navigateTo(drive)
+        if self.navigateTo(target):
+            return
+        self._syncDriveCombo(self._source_model.currentPath())
+        self._status_label.setText(f"Drive unavailable: {target}")
 
+    def _onDriveArrowPressed(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drive_popup_was_open = self._drive_combo.view().isVisible()
+
+    # --------------------------------------------------------
+    # Method: _onDriveArrowClicked
+    # Purpose: Open the drive list when the click is released on
+    #          the arrow. Opening on press lets that same click
+    #          select the current item and close the list.
+    # --------------------------------------------------------
     def _onDriveArrowClicked(self, event):
-        if self._drive_combo.isVisible():
+        was_open = self._drive_popup_was_open
+        self._drive_popup_was_open = False
+        if event.button() != Qt.LeftButton or was_open:
+            return
+        if not self._drive_arrow.rect().contains(event.pos()):
+            return
+        if not self._drive_combo.isHidden():
             self._drive_combo.showPopup()
 
+    # --------------------------------------------------------
+    # Method: _refreshDrives
+    # Purpose: Re-scan drives and mounts (USB, network, cloud) and
+    #          rebuild the dropdown. Runs when the menu is opened.
+    #          Each item stores its folder path as item data.
+    # --------------------------------------------------------
     def _refreshDrives(self):
-        """Re-scan for drives (USB, external disks) and update the dropdown.
+        self._drive_entries = listDrives()
+        combo = self._drive_combo
+        combo.blockSignals(True)
+        combo.clear()
+        separator_added = False
+        for entry in self._drive_entries:
+            if entry.is_mount and not separator_added:
+                combo.insertSeparator(combo.count())
+                separator_added = True
+            combo.addItem(entry.label, entry.path)
+            combo.setItemData(combo.count() - 1, entry.path, Qt.ToolTipRole)
+        popup_width = max(
+            (combo.fontMetrics().horizontalAdvance(e.label) for e in self._drive_entries),
+            default=0,
+        )
+        combo.view().setMinimumWidth(popup_width + 32)
+        has_drives = bool(self._drive_entries)
+        combo.setVisible(has_drives)
+        self._drive_arrow.setVisible(has_drives)
+        combo.blockSignals(False)
+        self._syncDriveCombo(self._source_model.currentPath())
 
-        On Windows, called automatically when the drive menu is opened.
-        """
-        if not self._drive_combo.isVisible() and os.name != "nt":
-            return
-        drives = getWindowsDrives()
-        self._drive_combo.blockSignals(True)
-        self._drive_combo.clear()
-        if drives:
-            self._drive_combo.addItems(drives)
-            self._drive_combo.setVisible(True)
-            self._drive_arrow.setVisible(True)
-            self._syncDriveCombo(self._source_model.currentPath())
-        self._drive_combo.blockSignals(False)
-
+    # --------------------------------------------------------
+    # Method: _syncDriveCombo
+    # Purpose: Show the entry that contains the current folder
+    #          (the deepest one, so a mount wins over Home and /).
+    # --------------------------------------------------------
     def _syncDriveCombo(self, path):
-        """Keep drive dropdown in sync with current path (Windows)."""
-        if not self._drive_combo.isVisible():
+        if not path or not self._drive_entries:
             return
-        path = os.path.normpath(path)
-        root, _ = os.path.splitdrive(path)
-        if not root:
+        entry_index = findDriveForPath(self._drive_entries, path)
+        if entry_index < 0:
             return
-        drive = (root + "\\") if not root.endswith("\\") else root
-        drive_upper = drive.upper()
-        for i in range(self._drive_combo.count()):
-            if self._drive_combo.itemText(i).upper() == drive_upper:
-                self._drive_combo.blockSignals(True)
-                self._drive_combo.setCurrentIndex(i)
-                self._drive_combo.blockSignals(False)
+        wanted = self._drive_entries[entry_index].path
+        combo = self._drive_combo
+        for i in range(combo.count()):
+            if combo.itemData(i) == wanted:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(i)
+                combo.blockSignals(False)
                 break
 
     def _goHome(self):
@@ -3836,6 +4041,10 @@ class FilePanel(QWidget):
         self._btn_up.setEnabled(bool(parent) and parent != current)
 
     def _updateStatusLabel(self):
+        if self._source_model.isLoading():
+            self._status_label.setText("Loading folder\u2026")
+            _setDynamicProperty(self._status_label, "filterWarning", False)
+            return
         total = self._source_model.rowCount()
         dirs = sum(
             1 for i in range(total)
@@ -3879,16 +4088,13 @@ class FilePanel(QWidget):
             self._scan_progress = None
 
     def _cancelRecursiveScanThread(self):
+        """Stop the current Subfolders scan without waiting for it."""
         self._closeScanProgress()
-        if self._scan_thread is None:
-            return
         thr = self._scan_thread
-        if thr.isRunning():
-            thr.cancel()
-            thr.wait(120000)
-        QApplication.processEvents()
-        thr.deleteLater()
         self._scan_thread = None
+        if thr is None:
+            return
+        retireThread(thr, self._retired_threads)
 
     def _onRecursiveScanRequested(self, path, gen):
         quiet = self._source_model.quietScanPending()
@@ -3903,11 +4109,12 @@ class FilePanel(QWidget):
             self._scan_progress.setWindowModality(Qt.WindowModal)
             self._scan_progress.canceled.connect(self._onScanProgressCanceled)
 
+        # No parent: a running thread must not be destroyed with the
+        # panel. shutdownBackgroundWork waits, then detaches leftovers.
         self._scan_thread = RecursiveScanThread(
             gen,
             path,
             self._source_model.showHiddenFiles(),
-            self,
         )
         self._scan_thread.progress.connect(self._onRecursiveScanProgress)
         self._scan_thread.finishedScan.connect(self._onRecursiveScanFinished)
@@ -3973,6 +4180,73 @@ class FilePanel(QWidget):
         thr = self._scan_thread
         self._scan_thread = None
         thr.deleteLater()
+
+    # --------------------------------------------------------
+    # Method: _onListingFinished
+    # Purpose: A flat folder read finished. Refilter, put back the
+    #          selection and scroll saved by refresh, or jump to
+    #          the top after opening a different folder.
+    # --------------------------------------------------------
+    def _onListingFinished(self, gen):
+        if gen != self._source_model._scan_generation:
+            return
+        self._proxy_model.invalidateFilter()
+        self._updateFilterUi()
+        self._restorePendingViewState()
+        if self._scroll_to_top_when_loaded:
+            self._scroll_to_top_when_loaded = False
+            QTimer.singleShot(0, self._scrollFileTableToTop)
+        self._updateStatusLabel()
+        self.listingFinished.emit()
+
+    # --------------------------------------------------------
+    # Method: _restorePendingViewState
+    # Purpose: Apply the selection and scroll position captured
+    #          before a slow reload. No-op when nothing was saved.
+    # --------------------------------------------------------
+    def _restorePendingViewState(self):
+        paths = self._pending_reselect
+        scroll = self._pending_scroll
+        self._pending_reselect = None
+        self._pending_scroll = None
+        if paths:
+            self._reselectPaths(paths)
+        if scroll is None:
+            return
+        bar = self._table.verticalScrollBar()
+        if bar is None:
+            return
+
+        def restoreScroll(value=scroll, scroll_bar=bar):
+            scroll_bar.setValue(min(value, scroll_bar.maximum()))
+
+        restoreScroll()
+        QTimer.singleShot(0, restoreScroll)
+
+    # --------------------------------------------------------
+    # Method: shutdownBackgroundWork
+    # Purpose: Ask folder reads to stop, wait briefly, and keep
+    #          any thread that is still inside a system call so
+    #          closing the window cannot destroy it.
+    # --------------------------------------------------------
+    def shutdownBackgroundWork(self):
+        threads = list(self._source_model.takeListingThreads())
+        scan = self._scan_thread
+        self._scan_thread = None
+        if scan is not None:
+            scan.cancel()
+            threads.append(scan)
+        threads.extend(self._retired_threads)
+        self._retired_threads.clear()
+        self._closeScanProgress()
+        waitForThreads(threads, THREAD_SHUTDOWN_WAIT_MS)
+
+    # --------------------------------------------------------
+    # Method: closeEvent
+    # --------------------------------------------------------
+    def closeEvent(self, event):
+        self.shutdownBackgroundWork()
+        super().closeEvent(event)
 
     def _updateFrameStyle(self):
         if self._is_active:

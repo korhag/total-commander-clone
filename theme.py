@@ -4,8 +4,13 @@ Flat dark palettes (Catppuccin, Matte Black, Osaka Jade, and others)
 plus Light and system styles. Sizes follow font size and interface density.
 """
 
+import os
+
 from PyQt5.QtGui import QFont
 
+# Drive dropdown width: drive letters on Windows are short; Linux shows
+# mounted folder names (for example "Kromeka-Shared"), so it needs more room.
+_DRIVE_COMBO_BASE_WIDTH = (54, 48) if os.name == "nt" else (110, 96)
 
 # ------------------------------------------------------------
 # UI scale (Settings → Interface density)
@@ -170,7 +175,7 @@ def getUiMetrics(font_size_pt, ui_scale_percent=DEFAULT_UI_SCALE_PERCENT):
         "radius": px(4, 2),
         "radius_lg": px(6, 3),
         "drive_combo_height": px(24, 18),
-        "drive_combo_width": px(54, 48),
+        "drive_combo_width": px(*_DRIVE_COMBO_BASE_WIDTH),
         "nav_line_pad_v": max(1, px(1, 1)),
         "nav_line_pad_h": max(3, px(4, 3)),
         "nav_filter_pad_right": px(20, 16),

@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
+
+## [0.12.0] - 2026-10-15
+
 ### Added
 
-- Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
+- **Drive space in the status bar**: The bottom status bar shows which drive the active panel is on, with used, free, and total space (for example `Left · / — 120.3 GB used, 340.1 GB free of 460.4 GB`). It follows the active panel and the folder open in its active tab, and it updates again after a refresh. The numbers are read in the background, so a slow network or cloud drive does not freeze the window.
+
+## [0.11.0] - 2026-10-15
+
+### Added
+
+- **Mounted folders in the drive list (Linux)**: The drive dropdown in each panel now shows on Linux. It lists `/` and Home (`~`), then every mounted folder by name, such as a USB stick, a network share, or a cloud drive mounted with rclone. The list is rebuilt each time you open the menu, so a new mount appears without restarting. System mounts are left out. If a mount cannot be opened, the panel stays where it is and the status line says so. Windows still shows drive letters.
+
+### Changed
+
+- Picking the drive that is already shown in the dropdown now opens its root. Before, nothing happened.
+
+### Fixed
+
+- The drive dropdown stays open when you click it. Before, it closed on the same click.
+- Opening a slow folder, such as a cloud drive, no longer freezes the window. The list fills in when the folder is ready, and the status line says "Loading folder…" until then.
+- Hovering a folder on a network or cloud drive no longer lists that folder just to show a size in the tooltip. Local folders still show it.
 
 ## [0.10.1] - 2026-10-14
 
