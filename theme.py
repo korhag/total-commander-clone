@@ -1,12 +1,14 @@
 """
 Total Commander Clone - Theme stylesheets
-Flat dark palettes (Catppuccin, Matte Black, Osaka Jade, and others)
-plus Light and system styles. Sizes follow font size and interface density.
+Hand-tuned palettes, Omarchy palettes (dark and light), plus Light and
+system styles. Sizes follow font size and interface density.
 """
 
 import os
 
 from PyQt5.QtGui import QFont
+
+from theme_palettes import OMARCHY_SEEDS, buildPalette
 
 # Drive dropdown width: drive letters on Windows are short; Linux shows
 # mounted folder names (for example "Kromeka-Shared"), so it needs more room.
@@ -215,6 +217,8 @@ def _fontSizesPt(base_pt, scale_factor=1.0):
 # Color palettes
 # Every theme defines the same keys. "dark" stays Catppuccin
 # Mocha so existing settings.json values keep their look.
+# Omarchy palettes are registered after this dict and never
+# replace an id that is already here.
 # ------------------------------------------------------------
 PALETTE_KEYS = (
     "base",
@@ -521,6 +525,24 @@ THEMES = {
     },
 }
 
+
+# ------------------------------------------------------------
+# Function: _registerOmarchyThemes
+# Purpose: Append Omarchy palettes after the hand-tuned ones.
+#          An id that already exists is left unchanged.
+# ------------------------------------------------------------
+def _registerOmarchyThemes():
+    for theme_id, seed in OMARCHY_SEEDS.items():
+        if theme_id in THEMES:
+            continue
+        THEMES[theme_id] = {
+            "label": seed["label"],
+            "colors": buildPalette(seed),
+        }
+
+
+_registerOmarchyThemes()
+
 # Light and system are not QSS palettes; they use Qt styles.
 _STYLE_THEMES = (
     ("light", "Light"),
@@ -531,7 +553,8 @@ _STYLE_THEMES = (
 # ------------------------------------------------------------
 # Function: getThemeChoices
 # Purpose: (id, label) pairs for Settings → Theme.
-#          Dark palettes first, then Light and Same as system.
+#          Hand-tuned palettes first, then Omarchy palettes
+#          in label order, then Light and Same as system.
 # ------------------------------------------------------------
 def getThemeChoices():
     choices = [(theme_id, spec["label"]) for theme_id, spec in THEMES.items()]

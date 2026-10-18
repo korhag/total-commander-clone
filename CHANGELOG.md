@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.13.0] - 2026-10-18
+
+### Added
+
+- **Omarchy color themes**: Settings → Theme now includes 24 more palettes from the Omarchy themes installed on this machine: Blackgold, Blackturq, Castle on a Lake, Catppuccin Latte, Darcula, Ethereal, Flexoki Light, Gold Rush, Golden Brown, Hackerman, Kanagawa, Last Horizon, Lumon, Lupine, Miasma, Neovoid, Omacarchy, Omaled, Retro 82, Ristretto, Rose Pine, Solitude, Vantablack, and White. Dark, Matte Black, Osaka Jade, Tokyo Night, Gruvbox Dark, Nord, and Everforest are unchanged. Catppuccin Latte, Flexoki Light, Lupine, Rose Pine, and White are full palettes as well.
+
 ## [0.12.0] - 2026-10-15
 
 ### Added
