@@ -58,10 +58,13 @@ class TestThemePreviewDialog(unittest.TestCase):
         seen = []
         dialog = self._dialog(seen)
         _click_row(dialog, 4)
+        QTest.qWait(0)
         self.assertEqual(seen[-1], "t4")
         QTest.mousePress(dialog._compare, Qt.LeftButton)
+        QTest.qWait(0)
         self.assertEqual(seen[-1], "t2")
         QTest.mouseRelease(dialog._compare, Qt.LeftButton)
+        QTest.qWait(0)
         self.assertEqual(seen[-1], "t4")
         QTest.mouseClick(dialog._accept, Qt.LeftButton)
         self.assertEqual(dialog.chosenTheme(), "t4")
@@ -74,8 +77,22 @@ class TestThemePreviewDialog(unittest.TestCase):
         seen = []
         dialog = self._dialog(seen)
         _click_row(dialog, 4)
+        QTest.qWait(0)
         QTest.mouseClick(dialog._cancel, Qt.LeftButton)
         self.assertIsNone(dialog.chosenTheme())
         self.assertEqual(seen[-1], "t2")
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_press_and_release_reports_only_the_highlight(self):
+        seen = []
+        dialog = self._dialog(seen)
+        _click_row(dialog, 4)
+        QTest.qWait(0)
+        seen.clear()
+        QTest.mousePress(dialog._compare, Qt.LeftButton)
+        QTest.mouseRelease(dialog._compare, Qt.LeftButton)
+        QTest.qWait(0)
+        self.assertEqual(seen, ["t4"])
         dialog.close()
         dialog.deleteLater()

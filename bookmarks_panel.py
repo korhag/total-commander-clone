@@ -12,13 +12,14 @@ from collections import namedtuple
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QMenu, QInputDialog, QMessageBox, QLineEdit,
+    QMenu, QMessageBox,
     QHBoxLayout, QPushButton, QDialog, QFileDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QTimer, QRect, QPoint
 from PyQt5.QtGui import QDesktopServices, QPainter, QPen, QColor, QPalette
 
 from bookmark_dialogs import BookmarkEditDialog
+from dialog_utils import askText
 from file_icons import iconFor
 
 
@@ -38,34 +39,6 @@ ROLE_PATH = Qt.UserRole + 1
 TYPE_BOOKMARK = "bookmark"
 TYPE_GROUP = "group"
 
-
-# ------------------------------------------------------------
-# Function: _askText
-# Purpose: Ask for a short name on the main window. The line edit
-#          is focused on the next turn, after any drag or menu
-#          has released the keyboard.
-# ------------------------------------------------------------
-def _askText(parent, title, label, text):
-    window = parent.window() if parent is not None else None
-    dialog = QInputDialog(window or parent)
-    dialog.setWindowTitle(title)
-    dialog.setLabelText(label)
-    dialog.setTextValue(text or "")
-    dialog.setInputMode(QInputDialog.TextInput)
-    dialog.setWindowModality(Qt.ApplicationModal)
-    line = dialog.findChild(QLineEdit)
-
-    def _focusLine():
-        dialog.activateWindow()
-        if line is None:
-            return
-        line.setFocus()
-        line.selectAll()
-
-    QTimer.singleShot(0, _focusLine)
-    if dialog.exec_() != QDialog.Accepted:
-        return ""
-    return dialog.textValue().strip()
 
 # Share of a row (from the top) that means "insert before" rather than "on the row".
 _BOOKMARK_EDGE = 0.30
@@ -515,7 +488,7 @@ class BookmarksTreeWidget(QTreeWidget):
     #          then wrap the two rows. Cancel leaves them as they are.
     # --------------------------------------------------------
     def _promptCreateGroup(self, moving, action):
-        name = _askText(
+        name = askText(
             self,
             "Create Group",
             "Create a new group containing these items. Group name:",
@@ -795,13 +768,13 @@ class BookmarksPanel(QWidget):
         self._emitStructureChanged()
 
     def _renameGroup(self, item):
-        name = _askText(self, "Rename Group", "Group name:", item.text(0))
+        name = askText(self, "Rename Group", "Group name:", item.text(0))
         if name:
             item.setText(0, name)
             self._emitStructureChanged()
 
     def _renameBookmark(self, item):
-        name = _askText(self, "Rename Bookmark", "Bookmark name:", item.text(0))
+        name = askText(self, "Rename Bookmark", "Bookmark name:", item.text(0))
         if name:
             item.setText(0, name)
             self._emitStructureChanged()

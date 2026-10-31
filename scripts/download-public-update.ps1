@@ -9,6 +9,12 @@
 
 .PARAMETER Branch
   Branch name (default: main).
+
+.PARAMETER Owner
+  GitHub account that owns the public repo.
+
+.PARAMETER Repo
+  Repository name.
 #>
 
 [CmdletBinding()]
@@ -16,14 +22,16 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $ProjectRoot,
 
-    [string] $Branch = "main"
+    [string] $Branch = "main",
+
+    [string] $Owner = "korhag",
+
+    [string] $Repo = "total-commander-clone"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Owner = "derya-kromeka"
-$Repo = "total-commander-clone"
 $ZipUrl = "https://github.com/$Owner/$Repo/archive/refs/heads/$Branch.zip"
 
 if (-not (Test-Path -LiteralPath $ProjectRoot)) {

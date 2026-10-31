@@ -155,7 +155,7 @@ class SettingsDialog(QDialog):
         profile_box = QGroupBox("Profile (settings, bookmarks, libraries)", self)
         profile_layout = QVBoxLayout(profile_box)
         self._profile_hint = self._hintLabel(
-            "Export saves one file with preferences, bookmarks, libraries, tags, "
+            "Export saves one file with preferences, bookmarks, libraries, fields, "
             "and saved filters. Import replaces those from a previously exported file."
         )
         profile_layout.addWidget(self._profile_hint)
@@ -352,7 +352,7 @@ class SettingsDialog(QDialog):
             self,
             "Export complete",
             f"Profile saved to:\n{path}\n\n"
-            "Includes settings, bookmarks, libraries, tags, and saved filters.",
+            "Includes settings, bookmarks, libraries, fields, and saved filters.",
         )
 
     # --------------------------------------------------------
@@ -372,7 +372,7 @@ class SettingsDialog(QDialog):
             self,
             "Import profile",
             "Importing will replace current settings, bookmarks, libraries, "
-            "tags, and saved filters with the file contents.\n\nContinue?",
+            "fields, and saved filters with the file contents.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

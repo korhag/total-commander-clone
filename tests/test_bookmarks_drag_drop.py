@@ -231,7 +231,7 @@ class TestBookmarkDragDrop(unittest.TestCase):
             return "Bundled"
 
         event = _DropEvent()
-        with patch("bookmarks_panel._askText", fake_ask):
+        with patch("bookmarks_panel.askText", fake_ask):
             tree.dropEvent(event)
             self.assertEqual(asked, [])
             self.assertNotIn("Bundled", [node["name"] for node in tree.getStructure()])

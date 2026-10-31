@@ -26,9 +26,6 @@ Thumbs.db
 .git-account.json
 .git-account.pat
 
-# Machine-specific copy destinations (local-only helper script)
-__copycodebase.json
-
 # Runtime logs and scan cache (dev mode may write these at repo root)
 scan_cache/
 *.log

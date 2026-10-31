@@ -33,9 +33,9 @@ from file_operation_queue import FileOperationQueue
 from transfers_bar import TransfersBar, TransfersDetailsDialog
 from batch_rename_dialog import BatchRenameDialog
 from bookmarks_panel import BookmarksPanel
+from dialog_utils import askText
 from libraries_panel import LibrariesPanel
-from library_browser_panel import LibraryBrowserPanel
-from library_dialogs import LibraryRootDialog, TagAssignmentDialog
+from library_dialogs import FolderFieldsDialog, LibraryRootDialog
 from library_manager import LibraryManager
 from settings_manager import SettingsManager
 from windows_shell_clipboard import setFileClipboard, getClipboardDropEffect
@@ -264,6 +264,7 @@ class FileManagerApp(QMainWindow):
         super().__init__(parent)
         self._settings = settings_manager
         self._library_manager = LibraryManager(settings_manager)
+        self._reloading_libraries = False
         self._active_panel = None
         self._clipboard_paths = []
         self._clipboard_mode = None
@@ -640,29 +641,6 @@ class FileManagerApp(QMainWindow):
         view_menu.addAction(self._action_swap_panes)
 
         view_menu.addSeparator()
-        self._action_toggle_library_active = QAction("Toggle Library Browser (Active Panel)\tCtrl+Shift+L", self)
-        self._action_toggle_library_active.setToolTip(
-            "Library browser (active panel)\n\n"
-            "Show or hide the library browser in the active panel’s slot. Shortcut: Ctrl+Shift+L."
-        )
-        self._action_toggle_library_active.triggered.connect(self._onToggleLibraryBrowserActive)
-        view_menu.addAction(self._action_toggle_library_active)
-
-        self._action_toggle_library_left = QAction("Toggle Library Browser (Left)", self)
-        self._action_toggle_library_left.setToolTip(
-            "Library browser (left)\n\nShow or hide the library browser in the left panel slot."
-        )
-        self._action_toggle_library_left.triggered.connect(lambda: self._toggleLibraryBrowser("left"))
-        view_menu.addAction(self._action_toggle_library_left)
-
-        self._action_toggle_library_right = QAction("Toggle Library Browser (Right)", self)
-        self._action_toggle_library_right.setToolTip(
-            "Library browser (right)\n\nShow or hide the library browser in the right panel slot."
-        )
-        self._action_toggle_library_right.triggered.connect(lambda: self._toggleLibraryBrowser("right"))
-        view_menu.addAction(self._action_toggle_library_right)
-
-        view_menu.addSeparator()
         self._action_mirror = QAction("Mirror\tCtrl+Shift+M", self)
         self._action_mirror.triggered.connect(self._onMirrorToOther)
         view_menu.addAction(self._action_mirror)
@@ -674,30 +652,49 @@ class FileManagerApp(QMainWindow):
         # --- Libraries Menu ---
         libraries_menu = menu_bar.addMenu("&Libraries")
 
-        self._action_add_library_root = QAction("Add Current Folder To Library...", self)
-        self._action_add_library_root.setToolTip(
-            "Add current folder to library\n\n"
-            "Register the active panel’s folder as a library root for tagging and search."
+        self._action_add_library = QAction("New Library...", self)
+        self._action_add_library.setToolTip(
+            "New library\n\nCreate a library. Roots and fields belong to it."
         )
-        self._action_add_library_root.triggered.connect(self._onAddCurrentFolderToLibrary)
+        self._action_add_library.triggered.connect(self._onAddLibrary)
+        libraries_menu.addAction(self._action_add_library)
+
+        self._action_add_library_root = QAction("Add Root...", self)
+        self._action_add_library_root.setToolTip(
+            "Add root\n\nAdd a folder to the active library."
+        )
+        self._action_add_library_root.triggered.connect(self._onAddRoot)
         libraries_menu.addAction(self._action_add_library_root)
 
-        self._action_assign_current_folder_tags = QAction("Assign Tags To Current Folder...", self)
-        self._action_assign_current_folder_tags.setToolTip(
-            "Assign tags to current folder\n\n"
-            "Edit tags for the folder shown in the active panel."
+        self._action_edit_fields = QAction("Edit Fields...", self)
+        self._action_edit_fields.setToolTip(
+            "Edit fields\n\nSet field values on the folder in the active panel."
         )
-        self._action_assign_current_folder_tags.triggered.connect(self._onAssignCurrentFolderTags)
-        libraries_menu.addAction(self._action_assign_current_folder_tags)
+        self._action_edit_fields.triggered.connect(self._onEditCurrentFolderFields)
+        libraries_menu.addAction(self._action_edit_fields)
 
         libraries_menu.addSeparator()
 
         self._action_scan_libraries = QAction("Scan Library Roots", self)
         self._action_scan_libraries.setToolTip(
-            "Scan library roots\n\nRescan indexed folders under each library root."
+            "Scan library roots\n\nLook for roots that moved to a new folder or drive."
         )
         self._action_scan_libraries.triggered.connect(self._onScanLibraries)
         libraries_menu.addAction(self._action_scan_libraries)
+
+        self._action_import_library = QAction("Import Library...", self)
+        self._action_import_library.setToolTip(
+            "Import library\n\nLoad a library file and find its roots on this computer."
+        )
+        self._action_import_library.triggered.connect(self._onImportLibrary)
+        libraries_menu.addAction(self._action_import_library)
+
+        self._action_export_library = QAction("Export Library...", self)
+        self._action_export_library.setToolTip(
+            "Export library\n\nSave the active library to a file."
+        )
+        self._action_export_library.triggered.connect(self._onExportLibrary)
+        libraries_menu.addAction(self._action_export_library)
 
         # --- Help Menu ---
         help_menu = menu_bar.addMenu("&Help")
@@ -1145,13 +1142,21 @@ class FileManagerApp(QMainWindow):
     # Purpose: Remember an explicit show or hide. Auto-collapse
     #          does not call this.
     # --------------------------------------------------------
-    def _persistSidebarVisibility(self):
+    def _saveSidebarState(self, write=False):
+        library_id = ""
+        if hasattr(self, "_libraries_panel"):
+            library_id = self._libraries_panel.selectedLibraryId()
         current = "libraries" if self._sidebar_tabs.currentIndex() == 1 else "bookmarks"
         self._settings.setSidebarState({
             "current_tab": current,
-            "hidden": bool(self._sidebar_user_hidden),
+            "hidden": bool(getattr(self, "_sidebar_user_hidden", False)),
+            "active_library_id": library_id,
         })
-        self._settings.saveSettings()
+        if write:
+            self._settings.saveSettings()
+
+    def _persistSidebarVisibility(self):
+        self._saveSidebarState(write=True)
 
     # --------------------------------------------------------
     # Method: _adjustUiScale
@@ -1203,10 +1208,13 @@ class FileManagerApp(QMainWindow):
         if not isinstance(obj, QWidget):
             return False
         return obj.window() is self
+
+    # --------------------------------------------------------
+    # Method: _initPanels
     # Purpose: Creates the layout: bookmarks pane | dual file panes
     #          with a center column of Copy/Move/Swap/Mirror buttons.
-    #          Each panel slot is a QStackedWidget that can toggle
-    #          between a FilePanel and a LibraryBrowserPanel.
+    #          Each panel slot is a QStackedWidget that can show the
+    #          file panel or quick view.
     # --------------------------------------------------------
     def _initPanels(self):
         central = QWidget()
@@ -1220,18 +1228,11 @@ class FileManagerApp(QMainWindow):
         self._left_panel = FilePanel("left", self, settings_manager=self._settings)
         self._right_panel = FilePanel("right", self, settings_manager=self._settings)
 
-        self._left_library_browser = LibraryBrowserPanel("left", self)
-        self._right_library_browser = LibraryBrowserPanel("right", self)
-        self._connectLibraryBrowser(self._left_library_browser, "left")
-        self._connectLibraryBrowser(self._right_library_browser, "right")
-
         self._left_stack = QStackedWidget()
         self._left_stack.addWidget(self._left_panel)
-        self._left_stack.addWidget(self._left_library_browser)
 
         self._right_stack = QStackedWidget()
         self._right_stack.addWidget(self._right_panel)
-        self._right_stack.addWidget(self._right_library_browser)
 
         self._left_quick_view = FileViewerWidget()
         self._right_quick_view = FileViewerWidget()
@@ -1280,8 +1281,22 @@ class FileManagerApp(QMainWindow):
 
         self._libraries_panel = LibrariesPanel(self)
         self._libraries_panel.navigateRequested.connect(self._onLibraryNavigateRequested)
-        self._libraries_panel.addLibraryRequested.connect(self._onAddCurrentFolderToLibrary)
+        self._libraries_panel.navigateOtherRequested.connect(self._onLibraryNavigateOther)
+        self._libraries_panel.addLibraryRequested.connect(self._onAddLibrary)
+        self._libraries_panel.addRootRequested.connect(self._onAddRoot)
         self._libraries_panel.scanLibrariesRequested.connect(self._onScanLibraries)
+        self._libraries_panel.importLibraryRequested.connect(self._onImportLibrary)
+        self._libraries_panel.exportLibraryRequested.connect(self._onExportLibrary)
+        self._libraries_panel.renameLibraryRequested.connect(self._onRenameLibrary)
+        self._libraries_panel.deleteLibraryRequested.connect(self._onDeleteLibrary)
+        self._libraries_panel.renameRootRequested.connect(self._onRenameRoot)
+        self._libraries_panel.locateRootRequested.connect(self._onLocateRoot)
+        self._libraries_panel.removeRootRequested.connect(self._onRemoveRoot)
+        self._libraries_panel.editFieldsRequested.connect(self._onEditFolderFields)
+        self._libraries_panel.createFieldRequested.connect(self._onCreateField)
+        self._libraries_panel.renameFieldRequested.connect(self._onRenameField)
+        self._libraries_panel.deleteFieldRequested.connect(self._onDeleteField)
+        self._libraries_panel.activeLibraryChanged.connect(self._onActiveLibraryChanged)
 
         self._sidebar_tabs = QTabWidget(self)
         self._sidebar_tabs.setObjectName("sidebarTabs")
@@ -1293,7 +1308,7 @@ class FileManagerApp(QMainWindow):
         )
         self._sidebar_tabs.setTabToolTip(
             1,
-            "Libraries\n\nTag-based library roots and matching folders.",
+            "Libraries\n\nFields and matching folders for the active library.",
         )
         sidebar_tab_bar = self._sidebar_tabs.tabBar()
         sidebar_tab_bar.setElideMode(Qt.ElideNone)
@@ -1851,7 +1866,6 @@ class FileManagerApp(QMainWindow):
             QKeySequence("Ctrl+V"):                       self._onPaste,
             QKeySequence("Ctrl+M"):                       self._onBatchRename,
             QKeySequence("Ctrl+Shift+S"):                 self._onSwapPanels,
-            QKeySequence("Ctrl+Shift+L"):                 self._onToggleLibraryBrowserActive,
             QKeySequence("Ctrl+Shift+M"):                 self._onMirrorToOther,
             QKeySequence("Ctrl+Q"):                       self._onToggleQuickView,
             QKeySequence("Ctrl+T"):                       self._onNewTab,
@@ -1979,8 +1993,8 @@ class FileManagerApp(QMainWindow):
     # --------------------------------------------------------
     # Method: _activePanelReady
     # Purpose: True when the active file panel is on screen. While
-    #          the library browser covers it, file actions would hit
-    #          a hidden selection, so they are refused instead.
+    #          quick view covers it, file actions would hit a hidden
+    #          selection, so they are refused instead.
     # --------------------------------------------------------
     def _activePanelReady(self):
         if not self._active_panel:
@@ -3117,23 +3131,41 @@ class FileManagerApp(QMainWindow):
             self._showStatus("Bookmark removed.")
 
     # --------------------------------------------------------
-    # Libraries / Tags
+    # Libraries / Fields
     # --------------------------------------------------------
     def _reloadLibrariesPanel(self, selected_library_id=""):
-        if not selected_library_id and hasattr(self, "_libraries_panel"):
-            selected_library_id = self._libraries_panel.selectedLibraryId()
-        libraries = self._library_manager.getLibraries()
-        tagged_folders = self._library_manager.getTaggedFolders()
-        self._libraries_panel.setData(libraries, tagged_folders, selected_library_id)
+        if self._reloading_libraries:
+            return
+        self._reloading_libraries = True
+        try:
+            if not selected_library_id and hasattr(self, "_libraries_panel"):
+                selected_library_id = self._libraries_panel.selectedLibraryId()
+            if not selected_library_id:
+                selected_library_id = self._settings.getSidebarState().get("active_library_id", "")
+            libraries = self._library_manager.getLibraries()
+            known = {library.get("id", "") for library in libraries}
+            if selected_library_id not in known:
+                selected_library_id = libraries[0].get("id", "") if libraries else ""
+            folders = []
+            fields = []
+            suggestions = {}
+            if selected_library_id:
+                folders = self._library_manager.findFolders(selected_library_id)
+                fields = self._library_manager.getFields(selected_library_id)
+                suggestions = {
+                    field["id"]: self._library_manager.getFieldValues(selected_library_id, field["id"])
+                    for field in fields
+                }
+            self._libraries_panel.setData(
+                libraries, folders, fields, suggestions, selected_library_id
+            )
+        finally:
+            self._reloading_libraries = False
 
-        if hasattr(self, "_left_library_browser"):
-            self._left_library_browser.setData(
-                libraries, tagged_folders, self._left_library_browser.selectedLibraryId()
-            )
-        if hasattr(self, "_right_library_browser"):
-            self._right_library_browser.setData(
-                libraries, tagged_folders, self._right_library_browser.selectedLibraryId()
-            )
+    def _onActiveLibraryChanged(self, library_id):
+        del library_id
+        self._saveSidebarState(write=True)
+        self._reloadLibrariesPanel(self._libraries_panel.selectedLibraryId())
 
     def _onScanLibraries(self):
         self._library_manager.refreshLibraries()
@@ -3149,6 +3181,15 @@ class FileManagerApp(QMainWindow):
         self._active_panel.navigateTo(path)
         self._showStatus(f"Opened library folder: {path}")
 
+    def _onLibraryNavigateOther(self, path):
+        if not path or not os.path.isdir(path):
+            self._showStatus("Selected library folder is offline or missing.")
+            return
+        if self._active_panel is None:
+            self._setActivePanel(self._left_panel)
+        self._getInactivePanel().navigateTo(path)
+        self._showStatus(f"Opened library folder: {path}")
+
     def _activeFolderCandidate(self):
         if not self._active_panel:
             return ""
@@ -3158,169 +3199,340 @@ class FileManagerApp(QMainWindow):
         current = self._active_panel.currentPath()
         return current if current and os.path.isdir(current) else ""
 
-    def _promptLibraryRegistration(self, initial_root_path, initial_library_name=""):
-        existing_names = [lib.get("name", "") for lib in self._library_manager.getLibraries()]
-        dialog = LibraryRootDialog(
-            existing_names,
-            initial_root_path=initial_root_path,
-            initial_library_name=initial_library_name,
-            parent=self,
-        )
-        if dialog.exec_() != QDialog.Accepted:
-            return None
+    def _libraryById(self, library_id):
+        for library in self._library_manager.getLibraries():
+            if library.get("id") == library_id:
+                return library
+        return None
 
-        values = dialog.values()
-        library_name = values.get("library_name", "").strip()
-        root_path = values.get("root_path", "").strip()
-        if not library_name:
-            QMessageBox.warning(self, "Library", "Library name is required.")
-            return None
-        if not root_path or not os.path.isdir(root_path):
-            QMessageBox.warning(self, "Library", "Choose a valid root folder.")
-            return None
-
-        result = self._library_manager.registerLibraryRoot(
-            library_name,
-            root_path,
-            root_name=values.get("root_name", "").strip(),
-        )
-        if result is None:
-            QMessageBox.warning(self, "Library", "Could not register the selected library root.")
-        return result
-
-    def _onAddCurrentFolderToLibrary(self):
-        folder_path = self._activeFolderCandidate()
-        if not folder_path:
-            QMessageBox.information(self, "Library", "Select a folder or open one in the active panel first.")
-            return
-        self._onAddFolderToLibrary(folder_path)
-
-    def _onAddFolderToLibrary(self, folder_path):
-        result = self._promptLibraryRegistration(folder_path)
-        if result is None:
-            return None
-        self._reloadLibrariesPanel(result["library"]["id"])
-        self._showStatus(
-            f"Added root to library: {result['library'].get('name', 'Library')} -> {result['root'].get('path', '')}"
-        )
-        return result
-
-    def _ensureLibraryContext(self, folder_path):
-        context = self._library_manager.resolveFolderContext(folder_path)
-        if context is not None:
-            return context
-
+    def _requireLibrary(self):
+        libraries = self._library_manager.getLibraries()
+        if libraries:
+            return libraries
         answer = QMessageBox.question(
             self,
-            "Library required",
-            "This folder is not under a known library root yet.\n\nAdd a library root now?",
+            "Library",
+            "Create a library first.\n\nCreate one now?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
         if answer != QMessageBox.Yes:
-            return None
+            return []
+        self._onAddLibrary()
+        return self._library_manager.getLibraries()
 
-        result = self._promptLibraryRegistration(folder_path)
-        if result is None:
-            return None
+    def _onAddLibrary(self):
+        name = askText(self, "New Library", "Library name:", "")
+        if not name:
+            return
+        library = self._library_manager.createLibrary(name)
+        if library is None:
+            QMessageBox.warning(self, "Library", "Could not create that library.")
+            return
+        self._reloadLibrariesPanel(library["id"])
+        self._saveSidebarState(write=True)
+        self._showStatus(f"Created library: {library.get('name', '')}")
 
-        self._reloadLibrariesPanel(result["library"]["id"])
-        return self._library_manager.resolveFolderContext(folder_path)
-
-    def _onAssignCurrentFolderTags(self):
-        folder_path = self._activeFolderCandidate()
+    def _onAddRoot(self, folder_path=""):
+        if not isinstance(folder_path, str):
+            folder_path = ""
+        libraries = self._requireLibrary()
+        if not libraries:
+            return
         if not folder_path:
-            QMessageBox.information(self, "Tags", "Select a folder or open one in the active panel first.")
-            return
-        self._onAssignFolderTags(folder_path)
-
-    def _onAssignFolderTags(self, folder_path):
-        if not folder_path or not os.path.isdir(folder_path):
-            QMessageBox.warning(self, "Tags", "Choose a valid folder first.")
-            return
-
-        context = self._ensureLibraryContext(folder_path)
-        if context is None:
-            return
-
-        record = self._library_manager.getFolderRecordForPath(folder_path) or {}
-        known_tags = self._library_manager.getAvailableTags()
-        dialog = TagAssignmentDialog(
-            folder_path,
-            existing_tags=record.get("tags", []),
-            existing_note=record.get("note", ""),
-            known_tags=known_tags,
+            folder_path = self._activeFolderCandidate()
+        dialog = LibraryRootDialog(
+            libraries,
+            initial_root_path=folder_path,
+            initial_library_id=self._libraries_panel.selectedLibraryId(),
             parent=self,
         )
         if dialog.exec_() != QDialog.Accepted:
             return
-
         values = dialog.values()
-        self._library_manager.assignTagsToFolder(folder_path, values.get("tags", []), values.get("note", ""))
-        self._reloadLibrariesPanel(context["library"]["id"])
-        self._showStatus(f"Tags updated for: {folder_path}")
-
-    # --------------------------------------------------------
-    # Library Browser Panel (full panel view)
-    # --------------------------------------------------------
-    def _connectLibraryBrowser(self, browser, side):
-        browser.navigateRequested.connect(
-            lambda path: self._onBrowserNavigateRequested(path, side)
-        )
-        browser.navigateInPanelRequested.connect(self._onBrowserNavigateInPanel)
-        browser.switchToFilePanelRequested.connect(
-            lambda: self._toggleLibraryBrowser(side)
-        )
-        browser.addLibraryRequested.connect(self._onAddCurrentFolderToLibrary)
-        browser.scanLibrariesRequested.connect(self._onScanLibraries)
-        browser.assignTagsRequested.connect(self._onAssignCurrentFolderTags)
-
-    def _onBrowserNavigateRequested(self, path, browser_side):
-        if not path or not os.path.isdir(path):
-            self._showStatus("Selected folder is offline or missing.")
+        root_path = values.get("root_path", "").strip()
+        if not root_path or not os.path.isdir(root_path):
+            QMessageBox.warning(self, "Library", "Choose a valid root folder.")
             return
-        stack = self._left_stack if browser_side == "left" else self._right_stack
-        panel = self._left_panel if browser_side == "left" else self._right_panel
-        stack.setCurrentWidget(panel)
-        panel.navigateTo(path)
-        self._setActivePanel(panel)
-        self._showStatus(f"Opened library folder: {path}")
-
-    def _onBrowserNavigateInPanel(self, path, panel_side):
-        if not path or not os.path.isdir(path):
-            self._showStatus("Selected folder is offline or missing.")
+        result = self._library_manager.addRoot(
+            values.get("library_id", ""),
+            root_path,
+            root_name=values.get("root_name", ""),
+        )
+        if result is None:
+            QMessageBox.warning(self, "Library", "Could not add that root.")
             return
-        panel = self._left_panel if panel_side == "left" else self._right_panel
-        stack = self._left_stack if panel_side == "left" else self._right_stack
-        stack.setCurrentWidget(panel)
-        panel.navigateTo(path)
-        self._showStatus(f"Opened library folder: {path}")
+        self._reloadLibrariesPanel(result["library"]["id"])
+        self._showStatus(
+            f"Added root to {result['library'].get('name', 'Library')}: {result['root'].get('path', '')}"
+        )
 
-    def _onToggleLibraryBrowserActive(self):
-        if self._active_panel == self._left_panel:
-            self._toggleLibraryBrowser("left")
+    def _onRenameLibrary(self, library_id):
+        library = self._libraryById(library_id)
+        if library is None:
+            return
+        name = askText(self, "Rename Library", "Library name:", library.get("name", ""))
+        if not name:
+            return
+        if self._library_manager.renameLibrary(library_id, name) is None:
+            QMessageBox.warning(self, "Library", "Could not rename that library.")
+            return
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus("Library renamed.")
+
+    def _onDeleteLibrary(self, library_id):
+        library = self._libraryById(library_id)
+        if library is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete library",
+            f'Delete library "{library.get("name", "")}"?\n\n'
+            "Its roots and field values are removed from this app. Folders on disk stay.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._library_manager.deleteLibrary(library_id)
+        self._reloadLibrariesPanel()
+        self._saveSidebarState(write=True)
+        self._showStatus("Library deleted.")
+
+    def _onRenameRoot(self, library_id, root_id):
+        library = self._libraryById(library_id) or {}
+        root = next((item for item in library.get("roots", []) if item.get("id") == root_id), None)
+        if root is None:
+            return
+        name = askText(self, "Rename Root", "Root name:", root.get("name", ""))
+        if not name:
+            return
+        if self._library_manager.renameRoot(library_id, root_id, name) is None:
+            QMessageBox.warning(self, "Library", "Could not rename that root.")
+            return
+        self._reloadLibrariesPanel(library_id)
+
+    def _onLocateRoot(self, library_id, root_id):
+        library = self._libraryById(library_id) or {}
+        root = next((item for item in library.get("roots", []) if item.get("id") == root_id), None)
+        start = ""
+        if root is not None:
+            start = root.get("path") or root.get("last_seen_path") or ""
+        chosen = QFileDialog.getExistingDirectory(self, "Locate root", start)
+        if not chosen:
+            return
+        located = self._library_manager.locateRoot(library_id, root_id, chosen)
+        if located is None:
+            QMessageBox.warning(
+                self,
+                "Locate root",
+                "Choose a folder that is not already a root of this library.",
+            )
+            return
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus(f"Root location updated: {located.get('path', '')}")
+
+    def _onRemoveRoot(self, library_id, root_id):
+        library = self._libraryById(library_id) or {}
+        root = next((item for item in library.get("roots", []) if item.get("id") == root_id), None)
+        name = root.get("name", "Root") if root else "Root"
+        answer = QMessageBox.question(
+            self,
+            "Remove root",
+            f'Remove root "{name}" from this library?\n\nThe folder stays on disk.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._library_manager.removeRoot(library_id, root_id)
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus("Root removed from the library.")
+
+    def _onCreateField(self):
+        library_id = self._libraries_panel.selectedLibraryId()
+        if not library_id:
+            QMessageBox.information(self, "Field", "Select a library first.")
+            return
+        name = askText(self, "New Field", "Field name:", "")
+        if not name:
+            return
+        field = self._library_manager.createField(library_id, name)
+        if field is None:
+            QMessageBox.warning(self, "Field", "Could not create that field.")
+            return
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus(f"Field added: {field.get('name', '')}")
+
+    def _onRenameField(self, field_id):
+        library_id = self._libraries_panel.selectedLibraryId()
+        field = next(
+            (item for item in self._library_manager.getFields(library_id) if item.get("id") == field_id),
+            None,
+        )
+        if field is None:
+            return
+        name = askText(self, "Rename Field", "Field name:", field.get("name", ""))
+        if not name:
+            return
+        renamed = self._library_manager.renameField(library_id, field_id, name)
+        if renamed is None:
+            QMessageBox.warning(self, "Field", "That name is empty or already used.")
+            return
+        self._reloadLibrariesPanel(library_id)
+
+    def _onDeleteField(self, field_id):
+        library_id = self._libraries_panel.selectedLibraryId()
+        field = next(
+            (item for item in self._library_manager.getFields(library_id) if item.get("id") == field_id),
+            None,
+        )
+        if field is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete field",
+            f'Delete field "{field.get("name", "")}"?\n\n'
+            "It is removed from every folder in this library.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._library_manager.deleteField(library_id, field_id)
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus("Field deleted.")
+
+    def _onEditCurrentFolderFields(self):
+        self._onEditFolderFields(self._activeFolderCandidate())
+
+    def _onEditFolderFields(self, folder_path=""):
+        if not folder_path:
+            folder_path = self._activeFolderCandidate()
+        if not folder_path or not os.path.isdir(folder_path):
+            QMessageBox.information(
+                self, "Fields", "Select a folder or open one in the active panel first."
+            )
+            return
+        libraries = self._requireLibrary()
+        if not libraries:
+            return
+        library_id = self._libraries_panel.selectedLibraryId()
+        context = self._library_manager.resolveFolderContext(folder_path, library_id)
+        if context is None:
+            answer = QMessageBox.question(
+                self,
+                "Library root",
+                "This folder is not inside a root of the active library.\n\nAdd it as a root now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            added = self._library_manager.addRoot(library_id, folder_path)
+            if added is None:
+                QMessageBox.warning(self, "Library", "Could not add that root.")
+                return
+            self._reloadLibrariesPanel(library_id)
+            context = self._library_manager.resolveFolderContext(folder_path, library_id)
+            if context is None:
+                return
+
+        library_id = context["library"]["id"]
+        fields = self._library_manager.getFields(library_id)
+        record = self._library_manager.getFolderRecordForPath(folder_path, library_id) or {}
+        suggestions = {
+            field["id"]: self._library_manager.getFieldValues(library_id, field["id"])
+            for field in fields
+        }
+        dialog = FolderFieldsDialog(
+            folder_path,
+            fields,
+            record.get("fields") or {},
+            suggestions,
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._applyFolderFieldEdits(folder_path, library_id, dialog.values())
+        self._reloadLibrariesPanel(library_id)
+        self._showStatus(f"Fields updated for: {folder_path}")
+
+    def _applyFolderFieldEdits(self, folder_path, library_id, values):
+        id_map = {}
+        for created in values.get("created", []):
+            field = self._library_manager.createField(library_id, created.get("name", ""))
+            if field:
+                id_map[created.get("temp_id", "")] = field["id"]
+        cleaned = {}
+        for field_id, field_values in (values.get("fields") or {}).items():
+            real_id = id_map.get(field_id, field_id)
+            cleaned.setdefault(real_id, [])
+            cleaned[real_id].extend(field_values)
+        self._library_manager.setFolderFields(folder_path, library_id, cleaned)
+
+    def _onExportLibrary(self, library_id=""):
+        if not library_id:
+            library_id = self._libraries_panel.selectedLibraryId()
+        library = self._libraryById(library_id)
+        if library is None:
+            QMessageBox.information(self, "Export library", "Select a library first.")
+            return
+        default_name = f"{library.get('name', 'library')}.tcclib.json"
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export library",
+            default_name,
+            "Library (*.tcclib.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".tcclib.json"
+        if not self._library_manager.exportLibrary(library_id, path):
+            QMessageBox.warning(self, "Export library", "Could not write that file.")
+            return
+        self._showStatus(f"Exported library to {path}")
+
+    def _onImportLibrary(self):
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import library",
+            "",
+            "Library (*.tcclib.json *.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        result = self._library_manager.importLibrary(path, replace=False)
+        if result is None:
+            QMessageBox.warning(self, "Import library", "That file is not a library export.")
+            return
+        if result.get("conflict"):
+            answer = QMessageBox.question(
+                self,
+                "Import library",
+                f'"{result.get("name", "Library")}" is already on this computer.\n\n'
+                "Replace it with the file?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            result = self._library_manager.importLibrary(path, replace=True)
+            if result is None or result.get("conflict"):
+                QMessageBox.warning(self, "Import library", "Could not import that library.")
+                return
+        library = result.get("library") or {}
+        offline = sum(1 for root in library.get("roots", []) if not root.get("is_available"))
+        self._reloadLibrariesPanel(library.get("id", ""))
+        self._saveSidebarState(write=True)
+        if offline:
+            self._showStatus(
+                f"Imported {library.get('name', 'library')}. "
+                f"{offline} root(s) still need Locate root."
+            )
         else:
-            self._toggleLibraryBrowser("right")
-
-    def _toggleLibraryBrowser(self, side):
-        stack = self._left_stack if side == "left" else self._right_stack
-        browser = self._left_library_browser if side == "left" else self._right_library_browser
-
-        if stack.currentWidget() == browser:
-            file_panel = self._left_panel if side == "left" else self._right_panel
-            stack.setCurrentWidget(file_panel)
-            self._showStatus("Switched to file panel.")
-        else:
-            self._reloadLibraryBrowser(side)
-            stack.setCurrentWidget(browser)
-            self._showStatus("Switched to library browser.")
-
-    def _reloadLibraryBrowser(self, side):
-        browser = self._left_library_browser if side == "left" else self._right_library_browser
-        libraries = self._library_manager.getLibraries()
-        tagged_folders = self._library_manager.getTaggedFolders()
-        selected_id = browser.selectedLibraryId()
-        browser.setData(libraries, tagged_folders, selected_id)
+            self._showStatus(f"Imported {library.get('name', 'library')}.")
 
     # --------------------------------------------------------
     # Mirror: Sync folder between panels (direction from Settings)
@@ -3636,20 +3848,20 @@ class FileManagerApp(QMainWindow):
             )
 
         if single_selection and entries[0]["is_dir"] and not in_archive:
-            add_to_library_action = menu.addAction("Add To Library...")
+            add_to_library_action = menu.addAction("Add As Library Root...")
             add_to_library_action.setToolTip(
-                "Add to library\n\nRegister this folder as a library root."
+                "Add as library root\n\nAdd this folder as a root of a library."
             )
             add_to_library_action.triggered.connect(
-                lambda: self._onAddFolderToLibrary(entries[0]["full_path"])
+                lambda: self._onAddRoot(entries[0]["full_path"])
             )
 
-            assign_tags_action = menu.addAction("Assign Tags...")
-            assign_tags_action.setToolTip(
-                "Assign tags\n\nEdit tags for this folder in the library system."
+            edit_fields_action = menu.addAction("Edit Fields...")
+            edit_fields_action.setToolTip(
+                "Edit fields\n\nSet field values for this folder in the active library."
             )
-            assign_tags_action.triggered.connect(
-                lambda: self._onAssignFolderTags(entries[0]["full_path"])
+            edit_fields_action.triggered.connect(
+                lambda: self._onEditFolderFields(entries[0]["full_path"])
             )
 
         if not has_selection and not in_archive:
@@ -4388,11 +4600,7 @@ class FileManagerApp(QMainWindow):
 
         self._settings.applyBookmarkTreeSnapshot(self._bookmarks_panel.getStructure())
 
-        current_tab = "libraries" if self._sidebar_tabs.currentIndex() == 1 else "bookmarks"
-        self._settings.setSidebarState({
-            "current_tab": current_tab,
-            "hidden": bool(self._sidebar_user_hidden),
-        })
+        self._saveSidebarState()
 
         self._warnIfSaveFailed(self._settings.saveAll())
         self._left_panel.shutdownBackgroundWork()

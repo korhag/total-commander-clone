@@ -136,6 +136,7 @@ DEFAULT_STATE = {
     "sidebar_state": {
         "current_tab": "bookmarks",
         "hidden": False,
+        "active_library_id": "",
     },
 }
 

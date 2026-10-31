@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.21.0] - 2026-11-01
+
+### Added
+
+- **Libraries**: Add library and Add root are separate. Export writes one library file. Import loads it on another computer, then Scan finds the same roots. A root that is not found shows offline, and Locate root points at the folder on this computer.
+- **Fields**: Each library has its own fields. A folder can have several fields, and a field can have several values, including spaces and Turkish characters. Right-click a folder and choose Edit Fields to search existing fields or create one.
+
+### Changed
+
+- **Libraries**: The middle list filters the active library as you type. Part of a value is enough. Several values in one field match any of them. Several fields match all of them. The bottom list shows the folders.
+- **Old tags**: A tag such as `customer:Acme` becomes the field customer with the value Acme. A plain tag becomes the field Tag.
+
+### Removed
+
+- The full-size library browser, including its View menu entries and Ctrl+Shift+L. Libraries stay in the left sidebar.
+
+## [0.20.3] - 2026-10-31
+
+### Changed
+
+- **Updates**: The version check and the update download use `korhag/total-commander-clone`. On Linux and macOS, a missing update script leaves the app open and says to run git pull, then restart.
+
+### Removed
+
+- The copy helper, the Windows shortcut, and the history-rewrite script left from another computer.
+
+## [0.20.2] - 2026-10-31
+
+### Changed
+
+- **Themes**: Choosing a theme repaints without rebuilding every icon. Accept and OK skip a theme that is already on screen. Fast clicks apply the last one.
+
 ## [0.20.1] - 2026-10-31
 
 ### Fixed

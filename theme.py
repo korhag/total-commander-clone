@@ -1514,15 +1514,6 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         color: {c['overlay0']};
     }}
 
-    /* ====================================================== */
-    /* Library Browser Panel                                    */
-    /* ====================================================== */
-    QPushButton#libraryToolButton {{
-        padding: {m['status_pad_v']}px {m['chip_pad_h_wide']}px;
-        font-size: {fs['small']}pt;
-        min-height: {m['bookmark_btn_min_height']}px;
-    }}
-
     QListWidget {{
         background-color: {c['panel_bg']};
         color: {c['text']};
@@ -1551,8 +1542,8 @@ def applyTheme(app, theme_mode, font_size_pt=None, ui_scale_percent=None):
     Expects app._system_style_name and app._system_palette set at startup (see main.py).
 
     font_size_pt: optional base font size from Settings. When None, uses app.font()
-    point size (falls back to 10). Always updates QApplication font so light/system
-    themes match Settings on startup.
+    point size (falls back to 10). Updates QApplication font so light/system
+    themes match Settings. The same theme, size, and density is left as it is.
 
     ui_scale_percent: density preset percent — spacing and control sizes (see getUiMetrics).
     Layout metrics also scale with font_size_pt (10 pt = 100%).
@@ -1568,6 +1559,11 @@ def applyTheme(app, theme_mode, font_size_pt=None, ui_scale_percent=None):
     if ui_scale_percent is None:
         ui_scale_percent = getattr(app, "_ui_scale_percent", DEFAULT_UI_SCALE_PERCENT)
     ui_scale_percent = normalize_ui_scale(ui_scale_percent)
+    mode = (theme_mode or "dark").strip().lower()
+    signature = (mode, font_size_pt, ui_scale_percent)
+    if getattr(app, "_applied_theme", None) == signature:
+        return
+    app._applied_theme = signature
     app._ui_scale_percent = ui_scale_percent
     metrics = getUiMetrics(font_size_pt, ui_scale_percent)
     app._ui_metrics = metrics
@@ -1575,8 +1571,6 @@ def applyTheme(app, theme_mode, font_size_pt=None, ui_scale_percent=None):
     app_font = QFont("Segoe UI", font_size_pt)
     app_font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(app_font)
-
-    mode = (theme_mode or "dark").strip().lower()
 
     if mode not in ("light", "system"):
         palette = getPalette(mode)

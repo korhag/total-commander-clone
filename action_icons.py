@@ -9,7 +9,7 @@ recolored to the theme text color. The choice is saved.
 import os
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QIcon, QImage, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 
 from file_icons import iconsDir
 from theme import themeColor
@@ -70,6 +70,8 @@ _accent = ""
 _text_color = ""
 _cache = {}
 _sources = {}
+# Shapes do not depend on the theme colors, so a new theme only recolors them.
+_masks = {}
 
 
 # ------------------------------------------------------------
@@ -163,17 +165,16 @@ def _coloredImage(action_id, mirrored):
     cached = _cache.get(key)
     if cached is not None:
         return cached
-    source = _sourceCell(action_id)
-    if source is None:
+    shape = _shapeFor(action_id)
+    if shape is None:
         _cache[key] = QImage()
         return _cache[key]
-    if mirrored:
-        source = source.mirrored(True, False)
-    style = _cellStyle(ACTION_IDS.index(action_id))
-    if style == "tile":
-        image = _paintTile(source, QColor(_accent))
+    if shape[0] == "tile":
+        image = _recolorTile(shape[1], shape[2], QColor(_accent))
     else:
-        image = _paintLine(source, QColor(_text_color), action_id)
+        image = _recolorMask(shape[1], QColor(_text_color))
+    if mirrored:
+        image = image.mirrored(True, False)
     scaled = image.scaled(
         _ICON_PX,
         _ICON_PX,
@@ -182,6 +183,28 @@ def _coloredImage(action_id, mirrored):
     )
     _cache[key] = scaled
     return scaled
+
+
+# ------------------------------------------------------------
+# Function: _shapeFor
+# Purpose: The color-free parts of one action. A later theme
+#          recolors these instead of reading the sheet again.
+# ------------------------------------------------------------
+def _shapeFor(action_id):
+    key = (_set_id, action_id)
+    if key in _masks:
+        return _masks[key]
+    source = _sourceCell(action_id)
+    if source is None:
+        _masks[key] = None
+        return None
+    style = _cellStyle(ACTION_IDS.index(action_id))
+    if style == "tile":
+        shape = _tileShape(source)
+    else:
+        shape = _lineShape(source, action_id)
+    _masks[key] = shape
+    return shape
 
 
 def _ensureColors():
@@ -244,43 +267,54 @@ def _loadCells(set_id):
 
 
 # ------------------------------------------------------------
-# Function: _paintTile
-# Purpose: Gray inside the rounded tile becomes the accent.
-#          The white glyph and its dark outline stay, so the
-#          icon stays readable on a light or dark accent.
-#          Gray outside the tile is dropped.
+# Function: _tileShape
+# Purpose: Split a tile into the area that takes the accent
+#          and the glyph that stays white with a dark outline.
+#          Both are built once and reused for every color.
 # ------------------------------------------------------------
-def _paintTile(cell, accent):
+def _tileShape(cell):
+    """Accent area, plus the white glyph and its dark outline."""
     cell = _fitCell(cell)
     _image, raw, width, height, stride = _raw(cell)
     kind = _classify(raw, width, height, stride)
     outside = _flood(kind, width, height, wall=0)
-    accent = QColor(accent)
-    outline = QColor(_OUTLINE)
+    clear = QColor(0, 0, 0, 0)
     white = QColor(255, 255, 255)
-    return _imageFromMarks(
-        width,
-        height,
-        kind,
-        outside,
-        accent,
-        outline,
-        white,
+    accent_mask = _imageFromMarks(
+        width, height, kind, outside, white, clear, clear
     )
+    glyph = _imageFromMarks(
+        width, height, kind, outside, clear, QColor(_OUTLINE), white
+    )
+    return ("tile", accent_mask, glyph)
 
 
-# ------------------------------------------------------------
-# Function: _paintLine
-# Purpose: Keep the bright strokes and drop the noisy
-#          background, then tint the strokes to `color`.
-# ------------------------------------------------------------
-def _paintLine(cell, color, action_id=None):
-    image = _paintLineMask(cell, color)
-    if action_id and _opaqueFraction(image) > 0.16 and _set_id != "line":
+def _lineShape(cell, action_id):
+    """White strokes. A crowded mixed cell uses the line sheet."""
+    mask = _paintLineMask(cell, QColor(255, 255, 255))
+    if action_id and _opaqueFraction(mask) > 0.16 and _set_id != "line":
         other = _sourceCellFrom("line", action_id)
         if other is not None:
-            return _paintLineMask(other, color)
-    return image
+            mask = _paintLineMask(other, QColor(255, 255, 255))
+    return ("line", mask)
+
+
+def _recolorTile(accent_mask, glyph, color):
+    canvas = _recolorMask(accent_mask, color)
+    painter = QPainter(canvas)
+    painter.drawImage(0, 0, glyph)
+    painter.end()
+    return canvas
+
+
+def _recolorMask(mask, color):
+    canvas = QImage(mask.size(), QImage.Format_ARGB32_Premultiplied)
+    canvas.fill(QColor(color))
+    painter = QPainter(canvas)
+    painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    painter.drawImage(0, 0, mask)
+    painter.end()
+    return canvas
 
 
 def _paintLineMask(cell, color):
@@ -349,9 +383,9 @@ def _classify(raw, width, height, stride):
 def _imageFromMarks(width, height, kind, outside, accent, outline, white):
     out = bytearray(width * height * 4)
     colors = {
-        1: (outline.blue(), outline.green(), outline.red(), 255),
-        2: (white.blue(), white.green(), white.red(), 255),
-        0: (accent.blue(), accent.green(), accent.red(), 255),
+        1: (outline.blue(), outline.green(), outline.red(), outline.alpha()),
+        2: (white.blue(), white.green(), white.red(), white.alpha()),
+        0: (accent.blue(), accent.green(), accent.red(), accent.alpha()),
     }
     for y in range(height):
         for x in range(width):
@@ -426,9 +460,10 @@ def _largestBlobs(mask, width, height, minimum):
 # Purpose: Drop caches so a test can point at a temp sheet.
 # ------------------------------------------------------------
 def _resetForTests():
-    global _set_id, _accent, _text_color, _cache, _sources
+    global _set_id, _accent, _text_color, _cache, _sources, _masks
     _set_id = _DEFAULT_SET
     _accent = ""
     _text_color = ""
     _cache = {}
     _sources = {}
+    _masks = {}

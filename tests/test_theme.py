@@ -5,14 +5,21 @@ and an unknown theme id falls back to Dark.
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import QApplication
 
 from theme import (
     PALETTE_KEYS,
     THEMES,
     UI_SCALE_PRESETS,
     _rgba,
+    applyTheme,
     getPalette,
     getThemeChoices,
     getThemeStylesheet,
@@ -154,6 +161,41 @@ class TestThemePalettes(unittest.TestCase):
                     3,
                     f"{theme_id} text on {surface} contrast {ratio:.2f}",
                 )
+
+
+class _ThemeApp:
+    """The slice of QApplication that applyTheme talks to."""
+
+    def __init__(self):
+        self.sheets = 0
+        self._system_style_name = ""
+        self._system_palette = None
+
+    def font(self):
+        return QFont("Segoe UI", 10)
+
+    def setFont(self, font):
+        return None
+
+    def setStyleSheet(self, sheet):
+        self.sheets += 1
+
+
+class TestApplyTheme(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls._app = QApplication.instance() or QApplication([])
+
+    def test_same_theme_is_applied_once(self):
+        app = _ThemeApp()
+        applyTheme(app, "nord", 10, 100)
+        applyTheme(app, "nord", 10, 100)
+        self.assertEqual(app.sheets, 1)
+        applyTheme(app, "nord", 12, 100)
+        self.assertEqual(app.sheets, 2)
+        applyTheme(app, "nord", 12, 85)
+        self.assertEqual(app.sheets, 3)
 
 
 if __name__ == "__main__":

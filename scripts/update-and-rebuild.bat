@@ -17,7 +17,7 @@ set "APP_EXE=TotalCommanderClone.exe"
 set "DIST_EXE=dist\TotalCommanderClone\TotalCommanderClone.exe"
 set "BRANCH=main"
 set "REMOTE=origin"
-set "PUBLIC_URL=https://github.com/derya-kromeka/total-commander-clone.git"
+set "PUBLIC_URL=https://github.com/korhag/total-commander-clone.git"
 set "HAVE_GIT="
 
 echo.
@@ -127,7 +127,7 @@ exit /b 0
 
 REM ------------------------------------------------------------
 :update_via_zip
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0download-public-update.ps1" -ProjectRoot "%cd%" -Branch "%BRANCH%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0download-public-update.ps1" -ProjectRoot "%cd%" -Branch "%BRANCH%" -Owner "korhag" -Repo "total-commander-clone"
 exit /b %ERRORLEVEL%
 
 REM ------------------------------------------------------------

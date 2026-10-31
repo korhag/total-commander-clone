@@ -27,8 +27,8 @@ from config_backup import (
 
 
 # Public upstream (read without credentials).
-PUBLIC_REPO_HTTPS = "https://github.com/derya-kromeka/total-commander-clone.git"
-PUBLIC_REPO_OWNER = "derya-kromeka"
+PUBLIC_REPO_HTTPS = "https://github.com/korhag/total-commander-clone.git"
+PUBLIC_REPO_OWNER = "korhag"
 PUBLIC_REPO_NAME = "total-commander-clone"
 PUBLIC_DEFAULT_BRANCH = "main"
 
@@ -668,8 +668,16 @@ def launchUpdateAndRebuild(repo_root: str) -> Tuple[bool, str]:
         return False, "Invalid project root."
 
     bat = os.path.join(repo_root, "scripts", "update-and-rebuild.bat")
-    if not os.path.isfile(bat):
-        return False, f"Missing update script:\n{bat}"
+    script = bat.replace(".bat", ".sh")
+    if os.name == "nt":
+        if not os.path.isfile(bat):
+            return False, f"Missing update script:\n{bat}"
+    elif not os.path.isfile(script):
+        return (
+            False,
+            "This system has no update script.\n"
+            "Run git pull, then restart.",
+        )
 
     # Only configure origin when Git + .git are available.
     if _gitAvailable() and os.path.isdir(os.path.join(repo_root, ".git")):
@@ -699,7 +707,7 @@ def launchUpdateAndRebuild(repo_root: str) -> Tuple[bool, str]:
             )
         else:
             subprocess.Popen(
-                ["bash", bat.replace(".bat", ".sh")],
+                ["bash", script],
                 cwd=repo_root,
                 start_new_session=True,
             )

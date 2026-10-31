@@ -4,6 +4,7 @@ The three action-icon sheets, recolored from the theme.
 
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PyQt5.QtWidgets import QApplication
 
@@ -78,6 +79,28 @@ class TestActionIcons(unittest.TestCase):
             if changed:
                 break
         self.assertTrue(changed)
+
+    def test_recolor_reuses_the_shape(self):
+        setIconSet("tile")
+        setIconColors("#ff0000", "#eeeeee")
+        _coloredImage("copy", False)
+        with patch("action_icons._flood") as flood:
+            setIconColors("#00aa00", "#eeeeee")
+            image = _coloredImage("copy", False)
+            flood.assert_not_called()
+        accent = None
+        glyph = None
+        for y in range(image.height()):
+            for x in range(image.width()):
+                pixel = image.pixelColor(x, y)
+                if pixel.alpha() < 200:
+                    continue
+                if pixel.green() > 120 and pixel.red() < 80:
+                    accent = pixel
+                if pixel.red() > 220 and pixel.green() > 220 and pixel.blue() > 220:
+                    glyph = pixel
+        self.assertIsNotNone(accent)
+        self.assertIsNotNone(glyph)
 
     def test_line_icon_is_mostly_clear(self):
         setIconSet("line")

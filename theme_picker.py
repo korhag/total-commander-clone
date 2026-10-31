@@ -5,7 +5,7 @@ Five names are visible. A click applies that theme. Holding the
 original-theme button shows it again until the button is released.
 """
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -36,6 +36,8 @@ class ThemePreviewDialog(QDialog):
         self._on_preview = on_preview
         self._chosen = None
         self._sized = False
+        self._pending_id = None
+        self._preview_scheduled = False
         self.setWindowTitle("Theme")
         self.setWindowModality(Qt.WindowModal)
         self.setModal(True)
@@ -123,6 +125,7 @@ class ThemePreviewDialog(QDialog):
     def closeEvent(self, event):
         if self.result() != QDialog.Accepted:
             self._preview(self._original_id)
+            self._applyPending()
         super().closeEvent(event)
 
     def _labelFor(self, theme_id):
@@ -140,6 +143,22 @@ class ThemePreviewDialog(QDialog):
             self._list.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 
     def _preview(self, theme_id):
+        """Remember the theme and apply it once the click has painted."""
+        if not theme_id or self._on_preview is None:
+            return
+        self._pending_id = theme_id
+        if self._preview_scheduled:
+            return
+        self._preview_scheduled = True
+        QTimer.singleShot(0, self._flushPreview)
+
+    def _flushPreview(self):
+        self._preview_scheduled = False
+        self._applyPending()
+
+    def _applyPending(self):
+        theme_id = self._pending_id
+        self._pending_id = None
         if theme_id and self._on_preview is not None:
             self._on_preview(theme_id)
 
@@ -157,10 +176,12 @@ class ThemePreviewDialog(QDialog):
     def _onAccept(self):
         chosen = self._highlightedId()
         self._preview(chosen)
+        self._applyPending()
         self._chosen = chosen
         self.accept()
 
     def _onCancel(self):
         self._preview(self._original_id)
+        self._applyPending()
         self._chosen = None
         self.reject()
