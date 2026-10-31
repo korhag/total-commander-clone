@@ -258,6 +258,18 @@ class FileViewerWidget(QWidget):
     def showPath(self, path):
         self._path = path or ""
         self._source_image = None
+        display_name = os.path.basename(self._path)
+        from archive_backend import pathInsideArchive, prepareViewPath
+
+        if pathInsideArchive(self._path):
+            real, error = prepareViewPath(self._path)
+            if error or not real:
+                self._showMessage(
+                    display_name or "Viewer",
+                    error or "Could not read this file from the archive.",
+                )
+                return
+            self._path = real
         preview = buildPreview(self._path)
         kind = preview.get("kind")
         name = preview.get("name") or os.path.basename(self._path)

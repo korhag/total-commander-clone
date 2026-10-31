@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.16.0] - 2026-10-31
+
+### Added
+
+- **File icons**: The file list and the bookmarks tree use the icon sheet in `icons/`. Archives, images, video, audio, drawings, spreadsheets, documents, and PDFs each have their own picture. Other files use the plain page. Image thumbnails still replace the image icon when that view is on.
+- **Folder color**: Folders take the accent color of the current theme, so they turn blue in Dark, gold in Matte Black, jade in Osaka Jade, and the matching accent in the other themes. The file-type pictures stay the same in every theme.
+
+## [0.15.0] - 2026-10-31
+
+### Added
+
+- **Narrow windows**: Each file panel tightens as it gets narrower. Settings and Thumbnails become icons first. Below that, Forward, Home, New folder, drives, and the path buttons move into a **...** menu, so the address and filter stay usable. Type, then Date Modified, hide until the panel is wide enough again. Your column choices are kept.
+- **Sidebar**: Below a comfortable width the Bookmarks / Libraries sidebar folds into a thin icon strip. Click an icon, or use View → Show Sidebar (Ctrl+B), to open it. A hide you choose yourself is remembered. Widening the window brings the sidebar back.
+- **Center and F-keys**: The buttons between the panels are wide enough for their labels, and those labels hide when the window is tight. The bottom F-key bar shortens to F2, F3, and so on when the full words do not fit. Folder tabs elide in the middle and stay a limited width, so one long name does not push the others away.
+
+## [0.14.0] - 2026-10-31
+
+### Added
+
+- **Archives**: Double-click a .zip, .7z, .rar, .tar, .gz, .xz, .iso, or similar file to browse it in the panel like a folder. Enter opens folders inside it. Back, Up, and the address bar leave the archive. The listing is read-only.
+- **Extract**: Right-click an archive for Extract Here, Extract to a folder named after the archive, or Extract to the other panel. Inside an archive, F6 and a drag onto a real folder extract the selection. The transfer bar shows progress and the usual overwrite prompt.
+- **View and open**: F3 and quick view read a file out of the archive (up to 32 MB). Opening a file extracts it, then hands it to the usual application. F4 stays unavailable until you extract, because the archive cannot be edited in place.
+- **Compress**: Right-click a selection and choose Compress to create a zip, 7z, tar, tar.gz, or tar.xz archive in this panel or the other one. Level and an optional password (zip and 7z) are in the dialog.
+- **7-Zip**: Linux and macOS use the 7-Zip command-line tool (`7zz`, `7z`, or `7za`). `scripts/install.sh` tries to install it. The Windows build copies `7z.exe` from the build machine when 7-Zip is installed there, so the packaged app does not need a separate install. RAR files can be opened and extracted, not created.
+
 ## [0.13.0] - 2026-10-18
 
 ### Added

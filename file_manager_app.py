@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import platform
+import uuid
 
 from PyQt5.QtWidgets import (
     QMainWindow, QSplitter, QToolBar, QAction, QStatusBar,
@@ -42,8 +43,31 @@ from windows_shell_clipboard import setFileClipboard, getClipboardDropEffect
 from app_version import APP_VERSION, APP_NAME, getWindowTitle
 from file_properties_dialog import showFileProperties
 from file_viewer import FileViewerWidget, FileViewerWindow, openInSystemEditor
+from archive_backend import (
+    archiveCacheDir,
+    archiveDisplayStem,
+    clearArchiveCache,
+    find7zExecutable,
+    getArchivePassword,
+    isArchiveFile,
+    isNavigablePath,
+    isPasswordError,
+    missing7zHint,
+    pathInsideArchive,
+    setArchivePassword,
+    splitArchivePath,
+)
+from compress_dialog import CompressDialog
 from panel_tabs import PanelTabBar, activeTabRecord
+from responsive_layout import (
+    CENTER_LABELS_HIDE_WIDTH,
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    SIDEBAR_AUTO_COLLAPSE_WIDTH,
+    scaled,
+)
 from settings_dialog import SettingsDialog
+from sidebar_rail import SidebarRail
 from theme import applyTheme, getUiMetrics, normalize_ui_scale, step_ui_scale, ui_scale_label
 from app_updater import (
     checkRemoteAppVersion,
@@ -131,7 +155,7 @@ def sanitizeWindowGeometry(geo):
     if not isinstance(geo, dict):
         return dict(defaults)
 
-    min_w, min_h = 800, 500
+    min_w, min_h = MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT
     try:
         w = int(geo.get("width", defaults["width"]))
         h = int(geo.get("height", defaults["height"]))
@@ -184,6 +208,7 @@ class FileManagerApp(QMainWindow):
         self._active_panel = None
         self._clipboard_paths = []
         self._clipboard_mode = None
+        self._password_declined = set()
         self._viewer_window = None
         self._drive_space_worker = None
         self._retired_drive_space_threads = set()
@@ -202,6 +227,7 @@ class FileManagerApp(QMainWindow):
         if app is not None:
             app.installEventFilter(self)
         self._applyUiMetrics()
+        self._updateSidebarCollapse()
         self._updateMirrorTooltips()
         self._state_restore_done = False
         self._post_show_layout_done = False
@@ -211,6 +237,7 @@ class FileManagerApp(QMainWindow):
         self._publish_worker = None
         self._publish_pending_result = None
         self._configureScanCache()
+        self._refreshThemedIcons()
         self._show_home_path()
 
     # --------------------------------------------------------
@@ -281,8 +308,8 @@ class FileManagerApp(QMainWindow):
             geo = sanitizeWindowGeometry({
                 "x": frame.x(),
                 "y": frame.y(),
-                "width": max(frame.width(), 800),
-                "height": max(frame.height(), 500),
+                "width": max(frame.width(), MIN_WINDOW_WIDTH),
+                "height": max(frame.height(), MIN_WINDOW_HEIGHT),
             })
             self.setGeometry(
                 geo["x"], geo["y"], geo["width"], geo["height"],
@@ -312,13 +339,28 @@ class FileManagerApp(QMainWindow):
             QTimer.singleShot(1800, lambda: self._startUpdateCheck(manual=False))
 
     def _runPostShowLayout(self):
-        sizes = self._main_splitter.sizes()
-        if sizes and sizes[0] < 180:
-            rest = max(400, sum(sizes) - 260)
-            self._main_splitter.setSizes([260, rest])
+        self._updateSidebarCollapse()
+        if not self._sidebar_collapsed:
+            sizes = self._main_splitter.sizes()
+            if sizes and sizes[0] < 180:
+                rest = max(400, sum(sizes) - 260)
+                self._main_splitter.setSizes([260, rest])
         self._applyUiMetrics()
         self._left_panel.relayoutColumns()
         self._right_panel.relayoutColumns()
+
+    # --------------------------------------------------------
+    # Method: resizeEvent
+    # Purpose: Fold the sidebar, slim the center strip, and
+    #          shorten the F-key labels when the window is narrow.
+    # --------------------------------------------------------
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, "_main_splitter"):
+            return
+        self._updateSidebarCollapse()
+        self._applyCenterStripMode()
+        self._applyBottomBarLabels()
 
     # --------------------------------------------------------
     # Method: _initWindow
@@ -338,7 +380,7 @@ class FileManagerApp(QMainWindow):
             geo["width"],
             geo["height"],
         )
-        self.setMinimumSize(800, 500)
+        self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
     # --------------------------------------------------------
     # Method: _initMenuBar
@@ -507,6 +549,20 @@ class FileManagerApp(QMainWindow):
         )
         self._action_show_hidden.triggered.connect(self._onToggleHidden)
         view_menu.addAction(self._action_show_hidden)
+
+        self._action_show_sidebar = QAction("Show Sidebar\tCtrl+B", self)
+        self._action_show_sidebar.setToolTip(
+            "Show sidebar\n\n"
+            "Show or hide Bookmarks and Libraries. "
+            "A narrow window folds this to a thin strip on its own. "
+            "Shortcut: Ctrl+B."
+        )
+        self._action_show_sidebar.setCheckable(True)
+        self._action_show_sidebar.setChecked(True)
+        self._action_show_sidebar.setShortcut(QKeySequence("Ctrl+B"))
+        self._action_show_sidebar.setShortcutContext(Qt.WindowShortcut)
+        self._action_show_sidebar.triggered.connect(self._onToggleSidebar)
+        view_menu.addAction(self._action_show_sidebar)
 
         view_menu.addSeparator()
 
@@ -720,11 +776,227 @@ class FileManagerApp(QMainWindow):
             self._toolbar.setIconSize(QSize(icon, icon))
         if hasattr(self, "_bottom_bar"):
             self._bottom_bar.setFixedHeight(metrics["bottom_bar_height"])
-        if hasattr(self, "_center_buttons"):
-            w = metrics["center_panel_width"]
-            self._center_buttons.setFixedWidth(w)
+        if hasattr(self, "_sidebar_rail"):
+            self._sidebar_rail.applyUiMetrics(metrics)
+            self._syncSidebarHostSize()
+        self._applyCenterStripMode()
+        self._applyBottomBarLabels()
         self._left_panel.applyUiMetrics(metrics)
         self._right_panel.applyUiMetrics(metrics)
+
+    # --------------------------------------------------------
+    # Method: _layoutScale
+    # Purpose: The same scale theme.getUiMetrics uses, so
+    #          width cut-offs follow font size and density.
+    # --------------------------------------------------------
+    def _layoutScale(self):
+        font_size = int(self._settings.getSetting("font_size", 10))
+        ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
+        return float(getUiMetrics(font_size, ui_scale).get("layout_scale", 1.0))
+
+    # --------------------------------------------------------
+    # Method: _applyCenterStripMode
+    # Purpose: Size the middle column from the widest label so
+    #          SPECIAL and MIRROR are not clipped. A narrow
+    #          window hides the labels and keeps the buttons.
+    # --------------------------------------------------------
+    def _applyCenterStripMode(self):
+        if not hasattr(self, "_center_buttons"):
+            return
+        font_size = int(self._settings.getSetting("font_size", 10))
+        ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
+        metrics = getUiMetrics(font_size, ui_scale)
+        hide_below = scaled(CENTER_LABELS_HIDE_WIDTH, metrics.get("layout_scale", 1.0))
+        show_labels = self.width() <= 1 or self.width() >= hide_below
+        for label in self._center_labels:
+            label.setVisible(show_labels)
+        width = metrics["center_panel_width"]
+        if show_labels:
+            for label in self._center_labels:
+                text_width = label.fontMetrics().horizontalAdvance(label.text())
+                width = max(width, text_width + 16)
+        self._center_buttons.setFixedWidth(width)
+
+    # --------------------------------------------------------
+    # Method: _applyBottomBarLabels
+    # Purpose: Use "F2" instead of "F2 Rename" when the full
+    #          labels do not fit. Tooltips keep the long names.
+    # --------------------------------------------------------
+    def _applyBottomBarLabels(self):
+        specs = getattr(self, "_bottom_button_specs", None)
+        if not specs or not hasattr(self, "_bottom_bar"):
+            return
+        full = [full_text for _btn, full_text, _short in specs]
+        use_short = self.width() > 1 and not self._bottomLabelsFit(full)
+        for btn, full_text, short_text in specs:
+            text = short_text if use_short else full_text
+            if btn.text() != text:
+                btn.setText(text)
+
+    # --------------------------------------------------------
+    # Method: _bottomLabelsFit
+    # Purpose: True when every full F-key label fits the window.
+    # --------------------------------------------------------
+    def _bottomLabelsFit(self, texts):
+        available = self.width() - 24
+        if available <= 1:
+            return True
+        font_size = int(self._settings.getSetting("font_size", 10))
+        ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
+        metrics = getUiMetrics(font_size, ui_scale)
+        pad = metrics["bottom_btn_pad_h"] * 2 + 18
+        spacing = 4 * max(0, len(texts) - 1)
+        fm = self._bottom_bar.fontMetrics()
+        total = sum(fm.horizontalAdvance(text) + pad for text in texts) + spacing
+        return total <= available
+
+    # --------------------------------------------------------
+    # Method: _windowIsNarrowForSidebar
+    # Purpose: True when the window is below the auto-collapse
+    #          cut-off. An unknown width counts as wide.
+    # --------------------------------------------------------
+    def _windowIsNarrowForSidebar(self):
+        if self.width() <= 1:
+            return False
+        return self.width() < scaled(SIDEBAR_AUTO_COLLAPSE_WIDTH, self._layoutScale())
+
+    # --------------------------------------------------------
+    # Method: _sidebarShouldCollapse
+    # Purpose: Collapse when the user hid it, or when the window
+    #          is narrow and they have not opened it since.
+    # --------------------------------------------------------
+    def _sidebarShouldCollapse(self):
+        narrow = self._windowIsNarrowForSidebar()
+        if not narrow:
+            self._sidebar_opened_while_narrow = False
+        if self._sidebar_user_hidden:
+            return True
+        if narrow and not self._sidebar_opened_while_narrow:
+            return True
+        return False
+
+    # --------------------------------------------------------
+    # Method: _updateSidebarCollapse
+    # Purpose: Apply the sidebar rule for the current width.
+    # --------------------------------------------------------
+    def _updateSidebarCollapse(self):
+        if not hasattr(self, "_sidebar_host"):
+            return
+        self._setSidebarCollapsed(self._sidebarShouldCollapse())
+
+    # --------------------------------------------------------
+    # Method: _setSidebarCollapsed
+    # Purpose: Swap the sidebar for the icon rail, or bring
+    #          the sidebar back at its last width.
+    # --------------------------------------------------------
+    def _setSidebarCollapsed(self, collapsed):
+        collapsed = bool(collapsed)
+        if not hasattr(self, "_sidebar_host"):
+            return
+        if self._sidebar_collapse_guard:
+            return
+        if collapsed == self._sidebar_collapsed and self._sidebar_collapse_ready:
+            self._syncSidebarAction()
+            return
+        self._sidebar_collapse_guard = True
+        self._sidebar_collapsed = collapsed
+        try:
+            if collapsed:
+                sizes = self._main_splitter.sizes()
+                if sizes and sizes[0] >= 180:
+                    self._sidebar_expanded_width = sizes[0]
+                self._sidebar_tabs.setMinimumWidth(0)
+                self._sidebar_tabs.hide()
+                self._sidebar_rail.show()
+                rail_w = max(1, self._sidebar_rail.width())
+                self._sidebar_host.setMinimumWidth(rail_w)
+                self._sidebar_host.setMaximumWidth(rail_w)
+                total = sum(self._main_splitter.sizes()) or (rail_w + 800)
+                self._main_splitter.setSizes([rail_w, max(1, total - rail_w)])
+            else:
+                self._sidebar_rail.hide()
+                self._sidebar_tabs.setMinimumWidth(200)
+                self._sidebar_tabs.show()
+                self._sidebar_host.setMinimumWidth(200)
+                self._sidebar_host.setMaximumWidth(16777215)
+                width = max(200, int(self._sidebar_expanded_width or 260))
+                sizes = self._main_splitter.sizes()
+                total = sum(sizes) if sizes else 0
+                if total <= width:
+                    total = width + 800
+                self._main_splitter.setSizes([width, max(1, total - width)])
+        finally:
+            self._sidebar_collapse_guard = False
+            self._sidebar_collapse_ready = True
+        self._syncSidebarAction()
+
+    # --------------------------------------------------------
+    # Method: _syncSidebarHostSize
+    # Purpose: Keep the collapsed host the same width as the rail
+    #          after icon size changes.
+    # --------------------------------------------------------
+    def _syncSidebarHostSize(self):
+        if not getattr(self, "_sidebar_collapsed", False):
+            return
+        rail_w = max(1, self._sidebar_rail.width())
+        self._sidebar_host.setMinimumWidth(rail_w)
+        self._sidebar_host.setMaximumWidth(rail_w)
+
+    # --------------------------------------------------------
+    # Method: _syncSidebarAction
+    # Purpose: Keep View -> Show Sidebar matched to the sidebar.
+    # --------------------------------------------------------
+    def _syncSidebarAction(self):
+        action = getattr(self, "_action_show_sidebar", None)
+        if action is None:
+            return
+        visible = not self._sidebar_collapsed
+        if action.isChecked() == visible:
+            return
+        action.blockSignals(True)
+        action.setChecked(visible)
+        action.blockSignals(False)
+
+    # --------------------------------------------------------
+    # Method: _onToggleSidebar
+    # Purpose: View menu and Ctrl+B. An explicit hide is saved.
+    #          Opening it while the window is narrow keeps it
+    #          open until the window is wide again.
+    # --------------------------------------------------------
+    def _onToggleSidebar(self, checked):
+        self._sidebar_user_hidden = not bool(checked)
+        if checked and self._windowIsNarrowForSidebar():
+            self._sidebar_opened_while_narrow = True
+        if not checked:
+            self._sidebar_opened_while_narrow = False
+        self._persistSidebarVisibility()
+        self._updateSidebarCollapse()
+
+    # --------------------------------------------------------
+    # Method: _onSidebarRailRequested
+    # Purpose: A rail button opens the sidebar on that tab.
+    # --------------------------------------------------------
+    def _onSidebarRailRequested(self, index):
+        self._sidebar_user_hidden = False
+        if self._windowIsNarrowForSidebar():
+            self._sidebar_opened_while_narrow = True
+        if 0 <= index < self._sidebar_tabs.count():
+            self._sidebar_tabs.setCurrentIndex(index)
+        self._persistSidebarVisibility()
+        self._setSidebarCollapsed(False)
+
+    # --------------------------------------------------------
+    # Method: _persistSidebarVisibility
+    # Purpose: Remember an explicit show or hide. Auto-collapse
+    #          does not call this.
+    # --------------------------------------------------------
+    def _persistSidebarVisibility(self):
+        current = "libraries" if self._sidebar_tabs.currentIndex() == 1 else "bookmarks"
+        self._settings.setSidebarState({
+            "current_tab": current,
+            "hidden": bool(self._sidebar_user_hidden),
+        })
+        self._settings.saveSettings()
 
     # --------------------------------------------------------
     # Method: _adjustUiScale
@@ -747,6 +1019,7 @@ class FileManagerApp(QMainWindow):
         self._applyUiMetrics()
         self._left_panel.relayoutColumns()
         self._right_panel.relayoutColumns()
+        self._refreshThemedIcons()
         self._settings.saveSettings()
         self._showStatus(f"Interface density: {ui_scale_label(new_scale)}")
         return True
@@ -869,8 +1142,26 @@ class FileManagerApp(QMainWindow):
         sidebar_tab_bar.setUsesScrollButtons(True)
         self._sidebar_tabs.setMinimumWidth(200)
 
+        self._sidebar_rail = SidebarRail(self)
+        self._sidebar_rail.tabRequested.connect(self._onSidebarRailRequested)
+        self._sidebar_rail.hide()
+
+        self._sidebar_host = QWidget()
+        sidebar_host_layout = QHBoxLayout(self._sidebar_host)
+        sidebar_host_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_host_layout.setSpacing(0)
+        sidebar_host_layout.addWidget(self._sidebar_rail)
+        sidebar_host_layout.addWidget(self._sidebar_tabs, 1)
+
+        self._sidebar_collapsed = False
+        self._sidebar_collapse_ready = True
+        self._sidebar_collapse_guard = False
+        self._sidebar_user_hidden = False
+        self._sidebar_opened_while_narrow = False
+        self._sidebar_expanded_width = 260
+
         self._main_splitter = QSplitter(Qt.Horizontal)
-        self._main_splitter.addWidget(self._sidebar_tabs)
+        self._main_splitter.addWidget(self._sidebar_host)
         self._main_splitter.addWidget(file_panes_widget)
 
         # Prevent sidebar from collapsing to zero; file area can shrink freely.
@@ -879,6 +1170,7 @@ class FileManagerApp(QMainWindow):
 
         bm_width = self._settings.getState("bookmarks_panel_width")
         if bm_width and isinstance(bm_width, (int, float)) and 180 <= bm_width <= 600:
+            self._sidebar_expanded_width = int(bm_width)
             self._main_splitter.setSizes([int(bm_width), 1200])
         else:
             self._main_splitter.setSizes([260, 1200])
@@ -1114,6 +1406,14 @@ class FileManagerApp(QMainWindow):
         self._lbl_mirror.setAlignment(Qt.AlignCenter)
         layout.addWidget(self._lbl_mirror)
 
+        self._center_labels = (
+            self._lbl_copy,
+            self._lbl_move,
+            self._lbl_special,
+            self._lbl_swap,
+            self._lbl_mirror,
+        )
+
         layout.addStretch(1)
 
         self._updateDirectionButtons()
@@ -1201,6 +1501,14 @@ class FileManagerApp(QMainWindow):
             self._transfers_details.onTaskFinished(task, success, message)
         if not success:
             self._refreshBothPanels()
+            if (
+                getattr(task, "operation", "") == "extract"
+                and isPasswordError(message)
+                and getattr(task, "archive_path", "")
+            ):
+                if self._promptArchivePassword(task.archive_path):
+                    self._showStatus("Password saved. Run the extract again.")
+                    return
             self._showStatus(message)
             return
         for panel in (self._left_panel, self._right_panel):
@@ -1276,12 +1584,15 @@ class FileManagerApp(QMainWindow):
             ),
         ]
 
+        self._bottom_button_specs = []
         for text, callback, tip in button_defs:
             btn = QPushButton(text)
             btn.setToolTip(tip)
             btn.clicked.connect(callback)
             btn.setFocusPolicy(Qt.NoFocus)
             btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            short = text.split(" ", 1)[0]
+            self._bottom_button_specs.append((btn, text, short))
             layout.addWidget(btn)
         layout.addStretch(1)
 
@@ -1383,9 +1694,9 @@ class FileManagerApp(QMainWindow):
         left_path = saved_left or self._settings.getSetting("default_left_path", "") or home
         right_path = saved_right or self._settings.getSetting("default_right_path", "") or home
 
-        if not os.path.isdir(left_path):
+        if not isNavigablePath(left_path):
             left_path = home
-        if not os.path.isdir(right_path):
+        if not isNavigablePath(right_path):
             right_path = home
 
         # Home is shown before this runs, so currentPath() is already set.
@@ -1398,7 +1709,7 @@ class FileManagerApp(QMainWindow):
             if self._panelMovedSinceStartup(panel, home):
                 continue
             tabs.importState(state)
-            if not saved or not os.path.isdir(saved):
+            if not isNavigablePath(saved):
                 panel.navigateTo(fallback)
 
         fallback_widths = self._settings.getSetting("column_widths", {})
@@ -1423,6 +1734,8 @@ class FileManagerApp(QMainWindow):
             self._sidebar_tabs.setCurrentIndex(1)
         else:
             self._sidebar_tabs.setCurrentIndex(0)
+        self._sidebar_user_hidden = bool(sidebar_state.get("hidden", False))
+        self._updateSidebarCollapse()
 
         QTimer.singleShot(200, self._deferredLibraryRefresh)
 
@@ -1483,10 +1796,206 @@ class FileManagerApp(QMainWindow):
         self._showStatus("Panes swapped.")
 
     # --------------------------------------------------------
+    # Archives: browse is read-only. Extract and compress go
+    # through the same transfer queue as copy and move.
+    # --------------------------------------------------------
+    def _require7z(self):
+        if find7zExecutable():
+            return True
+        QMessageBox.information(self, "Archives", missing7zHint())
+        return False
+
+    def _promptArchivePassword(self, archive_path):
+        """Ask once. Cancel is remembered until a later extract asks again."""
+        if not archive_path:
+            return False
+        name = os.path.basename(archive_path)
+        text, ok = QInputDialog.getText(
+            self,
+            "Password",
+            f"Password for {name}:",
+            QLineEdit.Password,
+        )
+        key = os.path.normcase(os.path.normpath(archive_path))
+        if not ok:
+            self._password_declined.add(key)
+            return False
+        setArchivePassword(archive_path, text)
+        self._password_declined.discard(key)
+        return True
+
+    def _offerArchivePassword(self, panel):
+        """After a listing, ask when the archive itself is encrypted
+        or a member is marked encrypted. A cancelled prompt is not repeated
+        until an extract fails."""
+        current = panel.currentPath() or ""
+        split = splitArchivePath(current)
+        if not split:
+            return
+        archive_path = split[0]
+        error = panel.sourceModel().loadError()
+        failed = isPasswordError(error)
+        encrypted_member = False
+        if not failed and not getArchivePassword(archive_path):
+            model = panel.sourceModel()
+            for row in range(model.rowCount()):
+                entry = model.entryAt(row)
+                if entry and entry.get("encrypted"):
+                    encrypted_member = True
+                    break
+        if not failed and not encrypted_member:
+            return
+        key = os.path.normcase(os.path.normpath(archive_path))
+        if not failed and key in self._password_declined:
+            return
+        if not self._promptArchivePassword(archive_path):
+            return
+        if failed:
+            panel.refresh(force_rescan=True)
+
+    def _queueExtract(self, archive_path, destination, members, on_success=None):
+        if not archive_path or not destination:
+            self._showStatus("No destination folder.")
+            return
+        if splitArchivePath(destination):
+            self._showStatus("Archive is read-only.")
+            return
+        if not self._require7z():
+            return
+        self._transfer_queue.enqueueExtract(
+            archive_path,
+            destination,
+            members=members,
+            password=getArchivePassword(archive_path),
+            on_success=on_success,
+        )
+        if members:
+            self._showStatus(f"Extract queued ({len(members)} item(s)).")
+        else:
+            self._showStatus("Extract queued.")
+
+    def _extractMembers(self, paths, destination):
+        """Extract panel paths that point inside one archive."""
+        if not destination or splitArchivePath(destination):
+            self._showStatus("Archive is read-only.")
+            return
+        if not os.path.isdir(destination):
+            self._showStatus("No destination folder.")
+            return
+        groups = {}
+        for path in paths:
+            split = splitArchivePath(path)
+            if not split or not split[1]:
+                continue
+            groups.setdefault(split[0], []).append(split[1])
+        if not groups:
+            self._showStatus("Nothing to extract.")
+            return
+        if len(groups) > 1:
+            self._showStatus("Select items from one archive at a time.")
+            return
+        archive_path, members = next(iter(groups.items()))
+        self._queueExtract(archive_path, destination, members)
+
+    def _extractSelectionTo(self, destination):
+        if not self._active_panel or not self._active_panel.isInArchive():
+            return
+        paths = self._active_panel.selectedPaths()
+        if not paths:
+            self._showStatus("No files selected.")
+            return
+        self._extractMembers(paths, destination)
+
+    def _extractArchiveTo(self, archive_path, destination):
+        if not isArchiveFile(archive_path):
+            self._showStatus("Not an archive.")
+            return
+        self._queueExtract(archive_path, destination, None)
+
+    def _openArchiveMember(self, entry):
+        archive_path = entry.get("archive_path") or ""
+        member = (entry.get("member") or "").replace("\\", "/")
+        if not archive_path or not member:
+            self._showStatus("Nothing to open.")
+            return
+        if entry.get("encrypted") and not getArchivePassword(archive_path):
+            if not self._promptArchivePassword(archive_path):
+                self._showStatus("Archive is encrypted.")
+                return
+        dest = os.path.join(archiveCacheDir(), "open-" + uuid.uuid4().hex[:12])
+        base_name = os.path.basename(member)
+
+        def _open_extracted():
+            extracted = os.path.join(dest, base_name)
+            if not os.path.exists(extracted):
+                self._showStatus("Could not open the extracted file.")
+                return
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(extracted))
+            except Exception as exc:
+                QMessageBox.warning(self, "Error", f"Could not open file:\n{exc}")
+
+        self._queueExtract(archive_path, dest, [member], on_success=_open_extracted)
+
+    def _onCompress(self):
+        if not self._activePanelReady():
+            return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return
+        paths = self._active_panel.selectedPaths()
+        if not paths:
+            self._showStatus("No files selected.")
+            return
+        if not self._require7z():
+            return
+        other = self._getInactivePanel()
+        dialog = CompressDialog(
+            paths,
+            self._active_panel.currentPath(),
+            other.currentPath() if other else "",
+            self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        chosen = dialog.values()
+        target = chosen["archive_path"]
+        if chosen.get("replace") and os.path.lexists(target):
+            try:
+                if os.path.isdir(target):
+                    QMessageBox.warning(
+                        self,
+                        "Compress",
+                        "A folder with that name already exists.",
+                    )
+                    return
+                os.remove(target)
+            except OSError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Compress",
+                    f"Could not replace the existing file:\n{exc}",
+                )
+                return
+        self._transfer_queue.enqueueCompress(
+            paths,
+            target,
+            chosen["format"],
+            chosen["level"],
+            password=chosen.get("password") or "",
+            base_dir=chosen.get("base_dir") or self._active_panel.currentPath(),
+        )
+        self._showStatus(f"Compress queued ({len(paths)} item(s)).")
+
+    # --------------------------------------------------------
     # File Operation Handlers
     # --------------------------------------------------------
     def _onCopyToOther(self):
         if not self._activePanelReady():
+            return
+        if self._active_panel.isInArchive():
+            dest = self._getInactivePanel().currentPath()
+            self._extractSelectionTo(dest)
             return
         paths = self._active_panel.selectedPaths()
         if not paths:
@@ -1495,6 +2004,9 @@ class FileManagerApp(QMainWindow):
         dest = self._getInactivePanel().currentPath()
         if not dest:
             self._showStatus("No destination panel.")
+            return
+        if splitArchivePath(dest):
+            self._showStatus("Archive is read-only.")
             return
 
         self._transfer_queue.enqueueCopy(paths, dest)
@@ -1507,9 +2019,15 @@ class FileManagerApp(QMainWindow):
         if not paths:
             self._showStatus("No files selected.")
             return
+        if self._active_panel.isInArchive() or any(pathInsideArchive(p) for p in paths):
+            self._showStatus("Archive is read-only.")
+            return
         dest = self._getInactivePanel().currentPath()
         if not dest:
             self._showStatus("No destination panel.")
+            return
+        if splitArchivePath(dest):
+            self._showStatus("Archive is read-only.")
             return
 
         self._transfer_queue.enqueueMove(paths, dest)
@@ -1522,6 +2040,9 @@ class FileManagerApp(QMainWindow):
         """Return (paths, rels, dest) or (None, None, None) after UI feedback."""
         if not self._activePanelReady():
             return None, None, None
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return None, None, None
         specs, err = self._active_panel.selectedTransferSpecs()
         if err or not specs:
             self._showStatus(err or "No files selected.")
@@ -1531,6 +2052,9 @@ class FileManagerApp(QMainWindow):
         dest = self._getInactivePanel().currentPath()
         if not dest:
             self._showStatus("No destination panel.")
+            return None, None, None
+        if splitArchivePath(dest):
+            self._showStatus("Archive is read-only.")
             return None, None, None
         root = self._active_panel.currentPath() or ""
         paths = [s["full_path"] for s in specs]
@@ -1660,6 +2184,9 @@ class FileManagerApp(QMainWindow):
     def _onDelete(self):
         if not self._activePanelReady() or self._active_panel.isRenaming():
             return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return
         paths = self._active_panel.selectedPaths()
         if not paths:
             self._showStatus("No files selected.")
@@ -1687,6 +2214,9 @@ class FileManagerApp(QMainWindow):
     def _onRename(self):
         if not self._activePanelReady():
             return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return
         if self._active_panel.isRenaming():
             return
         self._active_panel.startRename()
@@ -1697,6 +2227,9 @@ class FileManagerApp(QMainWindow):
     def _onNewFolder(self):
         if not self._activePanelReady():
             return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return
         self._active_panel.createNewFolder()
 
     # --------------------------------------------------------
@@ -1706,6 +2239,9 @@ class FileManagerApp(QMainWindow):
     # --------------------------------------------------------
     def _onBatchRename(self):
         if not self._activePanelReady():
+            return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
             return
         current_dir = self._active_panel.currentPath()
         if not current_dir:
@@ -1755,6 +2291,11 @@ class FileManagerApp(QMainWindow):
             entry = entries[0]
             if entry["is_dir"]:
                 self._active_panel.navigateTo(entry["full_path"])
+            elif isArchiveFile(entry.get("full_path")) and not entry.get("in_archive"):
+                if find7zExecutable():
+                    self._active_panel.navigateTo(entry["full_path"])
+                else:
+                    self._onFileOpen(entry)
             else:
                 self._onFileOpen(entry)
 
@@ -1762,8 +2303,14 @@ class FileManagerApp(QMainWindow):
     # Open file with system default application
     # --------------------------------------------------------
     def _onFileOpen(self, entry):
+        if entry.get("in_archive"):
+            self._openArchiveMember(entry)
+            return
+        path = entry.get("full_path") or ""
+        if isArchiveFile(path) and not find7zExecutable():
+            QMessageBox.information(self, "Archives", missing7zHint())
         try:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(entry["full_path"]))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open file:\n{e}")
 
@@ -1774,6 +2321,16 @@ class FileManagerApp(QMainWindow):
     def _onViewFile(self):
         if not self._activePanelReady():
             return
+        entry = self._active_panel.primaryFileEntry()
+        if (
+            entry
+            and entry.get("in_archive")
+            and entry.get("encrypted")
+            and not getArchivePassword(entry.get("archive_path") or "")
+        ):
+            if not self._promptArchivePassword(entry.get("archive_path") or ""):
+                self._showStatus("Archive is encrypted.")
+                return
         if self._viewer_window is None:
             self._viewer_window = FileViewerWindow(self)
         self._viewer_window.viewPanelFile(self._active_panel)
@@ -1788,6 +2345,9 @@ class FileManagerApp(QMainWindow):
         entry = self._active_panel.primaryFileEntry()
         if entry is None:
             self._showStatus("Select a file to edit.")
+            return
+        if entry.get("in_archive") or pathInsideArchive(entry.get("full_path")):
+            self._showStatus("Archive is read-only. Extract the file first.")
             return
         ok, message = openInSystemEditor(entry["full_path"])
         if not ok:
@@ -1923,6 +2483,9 @@ class FileManagerApp(QMainWindow):
     def _onCut(self):
         if not self._activePanelReady():
             return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
+            return
         self._clipboard_paths = self._active_panel.selectedPaths()
         self._clipboard_mode = "cut"
         if self._clipboard_paths:
@@ -1931,6 +2494,9 @@ class FileManagerApp(QMainWindow):
 
     def _onCopyToClipboard(self):
         if not self._activePanelReady():
+            return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only. Use Extract to copy files out.")
             return
         self._clipboard_paths = self._active_panel.selectedPaths()
         self._clipboard_mode = "copy"
@@ -1977,6 +2543,9 @@ class FileManagerApp(QMainWindow):
 
     def _onPaste(self):
         if not self._activePanelReady():
+            return
+        if self._active_panel.isInArchive():
+            self._showStatus("Archive is read-only.")
             return
 
         dest = self._active_panel.currentPath()
@@ -2091,6 +2660,22 @@ class FileManagerApp(QMainWindow):
         self._applyUiMetrics()
         self._left_panel.relayoutColumns()
         self._right_panel.relayoutColumns()
+        self._refreshThemedIcons()
+
+    # --------------------------------------------------------
+    # Method: _refreshThemedIcons
+    # Purpose: Folders take the accent of the theme just applied.
+    #          File-type pictures stay as drawn on the sheet.
+    # --------------------------------------------------------
+    def _refreshThemedIcons(self):
+        from file_icons import applyThemeAccent
+
+        if not applyThemeAccent():
+            return
+        self._left_panel.refreshItemIcons()
+        self._right_panel.refreshItemIcons()
+        if hasattr(self, "_bookmarks_panel"):
+            self._bookmarks_panel.refreshIcons()
 
     # --------------------------------------------------------
     # Method: _onSettingsProfileImported
@@ -2532,6 +3117,7 @@ class FileManagerApp(QMainWindow):
         entries = panel.selectedEntries()
         has_selection = len(entries) > 0
         single_selection = len(entries) == 1
+        in_archive = panel.isInArchive()
 
         file_entries = [e for e in entries if not e["is_dir"]]
 
@@ -2552,6 +3138,49 @@ class FileManagerApp(QMainWindow):
             open_action = menu.addAction(open_label)
             open_action.setToolTip(open_tip)
             open_action.triggered.connect(lambda: self._onContextOpen(entry))
+
+            if (
+                not entry["is_dir"]
+                and not in_archive
+                and isArchiveFile(entry.get("full_path"))
+            ):
+                archive_path = entry["full_path"]
+                stem = archiveDisplayStem(archive_path)
+                here = os.path.dirname(archive_path) or panel.currentPath()
+                into_folder = os.path.join(here, stem) if here else stem
+                other_path = self._getInactivePanel().currentPath()
+
+                open_inside = menu.addAction("Open in Panel")
+                open_inside.setToolTip(
+                    "Open in panel\n\nBrowse this archive like a folder."
+                )
+                open_inside.triggered.connect(
+                    lambda checked, path=archive_path, target=panel: target.navigateTo(path)
+                )
+
+                extract_here = menu.addAction("Extract Here")
+                extract_here.setToolTip(
+                    "Extract here\n\nUnpack this archive into the current folder."
+                )
+                extract_here.triggered.connect(
+                    lambda checked, path=archive_path, dest=here: self._extractArchiveTo(path, dest)
+                )
+
+                extract_sub = menu.addAction(f"Extract to {stem}/")
+                extract_sub.setToolTip(
+                    "Extract to folder\n\nCreate a folder named after the archive and unpack into it."
+                )
+                extract_sub.triggered.connect(
+                    lambda checked, path=archive_path, dest=into_folder: self._extractArchiveTo(path, dest)
+                )
+
+                extract_other = menu.addAction("Extract to Other Panel")
+                extract_other.setToolTip(
+                    "Extract to other panel\n\nUnpack this archive into the opposite panel."
+                )
+                extract_other.triggered.connect(
+                    lambda checked, path=archive_path, dest=other_path: self._extractArchiveTo(path, dest)
+                )
 
             if entry["is_dir"]:
                 folder_path = entry["full_path"]
@@ -2577,27 +3206,28 @@ class FileManagerApp(QMainWindow):
                 )
                 edit_action.triggered.connect(self._onEditFile)
 
-            reveal_action = menu.addAction("Open in File Explorer")
-            reveal_action.setToolTip(
-                "Open in File Explorer\n\n"
-                "Show this item in the system file manager "
-                "(selects the file or folder in Explorer)."
-            )
-            reveal_action.triggered.connect(
-                lambda: self._onRevealInFileExplorer(entry)
-            )
+            if not in_archive:
+                reveal_action = menu.addAction("Open in File Explorer")
+                reveal_action.setToolTip(
+                    "Open in File Explorer\n\n"
+                    "Show this item in the system file manager "
+                    "(selects the file or folder in Explorer)."
+                )
+                reveal_action.triggered.connect(
+                    lambda: self._onRevealInFileExplorer(entry)
+                )
 
-            terminal_action = menu.addAction("Open Folder in Terminal")
-            terminal_action.setToolTip(
-                "Open folder in Terminal\n\n"
-                "Open a Command Prompt / terminal window in the folder "
-                "that contains this item (or in the folder itself)."
-            )
-            terminal_action.triggered.connect(
-                lambda: self._onOpenFolderInTerminal(entry)
-            )
+                terminal_action = menu.addAction("Open Folder in Terminal")
+                terminal_action.setToolTip(
+                    "Open folder in Terminal\n\n"
+                    "Open a Command Prompt / terminal window in the folder "
+                    "that contains this item (or in the folder itself)."
+                )
+                terminal_action.triggered.connect(
+                    lambda: self._onOpenFolderInTerminal(entry)
+                )
 
-        if file_entries:
+        if file_entries and not in_archive:
             open_with_action = menu.addAction("Open With...")
             open_with_tip = (
                 "Open with\n\n"
@@ -2616,7 +3246,7 @@ class FileManagerApp(QMainWindow):
         if single_selection or file_entries:
             menu.addSeparator()
 
-        if has_selection:
+        if has_selection and not in_archive:
             cut_action = menu.addAction("Cut\tCtrl+X")
             cut_action.setToolTip(
                 "Cut\n\n"
@@ -2630,24 +3260,33 @@ class FileManagerApp(QMainWindow):
             )
             copy_action.triggered.connect(self._onCopyToClipboard)
 
-        paste_action = menu.addAction("Paste\tCtrl+V")
-        paste_action.setToolTip(
-            "Paste\n\n"
-            "Paste items from this app’s clipboard, or files/folders copied or cut in "
-            "Explorer / Finder. Shortcut: Ctrl+V."
-        )
-        paste_action.triggered.connect(self._onPaste)
-        paste_action.setEnabled(self._hasPasteSource())
+        if not in_archive:
+            paste_action = menu.addAction("Paste\tCtrl+V")
+            paste_action.setToolTip(
+                "Paste\n\n"
+                "Paste items from this app’s clipboard, or files/folders copied or cut in "
+                "Explorer / Finder. Shortcut: Ctrl+V."
+            )
+            paste_action.triggered.connect(self._onPaste)
+            paste_action.setEnabled(self._hasPasteSource())
 
         menu.addSeparator()
 
         if has_selection:
-            copy_other_action = menu.addAction("Copy to Other Panel\tF6")
-            copy_other_action.setToolTip(
-                "Copy to other panel\n\nCopy selected items to the opposite panel. Shortcut: F6."
-            )
+            if in_archive:
+                copy_other_action = menu.addAction("Extract to Other Panel\tF6")
+                copy_other_action.setToolTip(
+                    "Extract to other panel\n\n"
+                    "Extract the selected items into the opposite panel. Shortcut: F6."
+                )
+            else:
+                copy_other_action = menu.addAction("Copy to Other Panel\tF6")
+                copy_other_action.setToolTip(
+                    "Copy to other panel\n\nCopy selected items to the opposite panel. Shortcut: F6."
+                )
             copy_other_action.triggered.connect(self._onCopyToOther)
 
+        if has_selection and not in_archive:
             move_other_action = menu.addAction("Move to Other Panel\tF7")
             move_other_action.setToolTip(
                 "Move to other panel\n\nMove selected items to the opposite panel. Shortcut: F7."
@@ -2679,33 +3318,42 @@ class FileManagerApp(QMainWindow):
 
             menu.addSeparator()
 
-        if single_selection:
+        if single_selection and not in_archive:
             rename_action = menu.addAction("Rename\tF2")
             rename_action.setToolTip(
                 "Rename\n\nRename the selected item. Shortcut: F2."
             )
             rename_action.triggered.connect(self._onRename)
 
-        if has_selection:
+        if has_selection and not in_archive:
             delete_action = menu.addAction("Delete\tF9")
             delete_action.setToolTip(
                 "Delete\n\nDelete selected items. Shortcut: F9."
             )
             delete_action.triggered.connect(self._onDelete)
 
-        menu.addSeparator()
+        if not in_archive:
+            menu.addSeparator()
 
-        new_folder_action = menu.addAction("New Folder\tF8")
-        new_folder_action.setToolTip(
-            "New folder\n\nCreate a folder in the current directory. Shortcut: F8."
-        )
-        new_folder_action.triggered.connect(self._onNewFolder)
+            new_folder_action = menu.addAction("New Folder\tF8")
+            new_folder_action.setToolTip(
+                "New folder\n\nCreate a folder in the current directory. Shortcut: F8."
+            )
+            new_folder_action.triggered.connect(self._onNewFolder)
 
-        batch_rename_action = menu.addAction("Batch Rename...\tCtrl+M")
-        batch_rename_action.setToolTip(
-            "Batch rename\n\nRename multiple files using patterns. Shortcut: Ctrl+M."
-        )
-        batch_rename_action.triggered.connect(self._onBatchRename)
+            batch_rename_action = menu.addAction("Batch Rename...\tCtrl+M")
+            batch_rename_action.setToolTip(
+                "Batch rename\n\nRename multiple files using patterns. Shortcut: Ctrl+M."
+            )
+            batch_rename_action.triggered.connect(self._onBatchRename)
+
+        if has_selection and not in_archive:
+            compress_action = menu.addAction("Compress...")
+            compress_action.setToolTip(
+                "Compress\n\n"
+                "Create a zip, 7z, tar, tar.gz, or tar.xz archive from the selection."
+            )
+            compress_action.triggered.connect(self._onCompress)
 
         menu.addSeparator()
 
@@ -2718,7 +3366,7 @@ class FileManagerApp(QMainWindow):
                 lambda: self._copyPathToClipboard(entries[0]["full_path"])
             )
 
-        if single_selection and entries[0]["is_dir"]:
+        if single_selection and entries[0]["is_dir"] and not in_archive:
             add_to_library_action = menu.addAction("Add To Library...")
             add_to_library_action.setToolTip(
                 "Add to library\n\nRegister this folder as a library root."
@@ -2735,13 +3383,14 @@ class FileManagerApp(QMainWindow):
                 lambda: self._onAssignFolderTags(entries[0]["full_path"])
             )
 
-        bookmark_action = menu.addAction("Bookmark This Folder")
-        bookmark_action.setToolTip(
-            "Bookmark folder\n\nSave the current folder as a bookmark."
-        )
-        bookmark_action.triggered.connect(self._onAddBookmark)
+        if not in_archive:
+            bookmark_action = menu.addAction("Bookmark This Folder")
+            bookmark_action.setToolTip(
+                "Bookmark folder\n\nSave the current folder as a bookmark."
+            )
+            bookmark_action.triggered.connect(self._onAddBookmark)
 
-        if single_selection and not entries[0]["is_dir"]:
+        if single_selection and not entries[0]["is_dir"] and not in_archive:
             bookmark_file_action = menu.addAction("Bookmark This File")
             bookmark_file_action.setToolTip(
                 "Bookmark file\n\nSave this file path as a bookmark (double-click opens it)."
@@ -2750,7 +3399,7 @@ class FileManagerApp(QMainWindow):
                 lambda: self._onAddFileBookmark(entries[0])
             )
 
-        if single_selection:
+        if single_selection and not in_archive:
             menu.addSeparator()
             props_action = menu.addAction("Properties")
             props_action.setToolTip(
@@ -2932,6 +3581,18 @@ class FileManagerApp(QMainWindow):
     # Drag-and-Drop from Panel
     # --------------------------------------------------------
     def _onDroppedFiles(self, file_paths, drop_target, is_copy):
+        if splitArchivePath(drop_target):
+            self._showStatus("Archive is read-only.")
+            return
+        inner = [path for path in file_paths if pathInsideArchive(path)]
+        if inner:
+            if len(inner) != len(file_paths):
+                self._showStatus("Extract archive items on their own, not mixed with other files.")
+                return
+            if not is_copy:
+                self._showStatus("Archive is read-only, so the items will be extracted.")
+            self._extractMembers(inner, drop_target)
+            return
         if is_copy:
             self._transfer_queue.enqueueCopy(file_paths, drop_target)
             self._showStatus(f"Copy queued ({len(file_paths)} item(s)).")
@@ -3292,9 +3953,11 @@ class FileManagerApp(QMainWindow):
     #          for the panel that is active.
     # --------------------------------------------------------
     def _onPanelListingFinished(self):
-        if self.sender() is not self._active_panel:
-            return
-        self._refreshDriveSpace()
+        panel = self.sender()
+        if panel is self._active_panel:
+            self._refreshDriveSpace()
+        if panel is self._left_panel or panel is self._right_panel:
+            self._offerArchivePassword(panel)
 
     # --------------------------------------------------------
     # Method: _onActivePanelPathChanged
@@ -3465,11 +4128,13 @@ class FileManagerApp(QMainWindow):
         current_tab = "libraries" if self._sidebar_tabs.currentIndex() == 1 else "bookmarks"
         self._settings.setSidebarState({
             "current_tab": current_tab,
+            "hidden": bool(self._sidebar_user_hidden),
         })
 
         self._warnIfSaveFailed(self._settings.saveAll())
         self._left_panel.shutdownBackgroundWork()
         self._right_panel.shutdownBackgroundWork()
+        clearArchiveCache()
         event.accept()
 
     # --------------------------------------------------------

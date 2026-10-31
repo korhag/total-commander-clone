@@ -67,5 +67,22 @@ if exist "%REQUIREMENTS%" (
   echo [WARN] No %REQUIREMENTS% found; skipping package install.
 )
 
+where 7z >nul 2>&1
+if errorlevel 1 (
+  where winget >nul 2>&1
+  if errorlevel 1 (
+    echo [WARN] 7-Zip was not found. Archive browsing needs it.
+    echo        Install with: winget install 7zip.7zip
+  ) else (
+    echo [INFO] Installing 7-Zip...
+    winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+      echo [WARN] Could not install 7-Zip. Archive browsing needs it.
+    )
+  )
+) else (
+  echo [INFO] 7-Zip is already installed.
+)
+
 echo [INFO] Done. Start the app with: scripts\run.bat
 exit /b 0

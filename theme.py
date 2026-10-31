@@ -767,6 +767,22 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         border: 1px solid {c['border']};
         background-color: {c['button']};
     }}
+    QToolButton#navOverflowButton {{
+        background-color: {c['button']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-radius: {m['radius_lg']}px;
+        padding: {m['nav_btn_pad']}px;
+        font-weight: bold;
+    }}
+    QToolButton#navOverflowButton:hover {{
+        background-color: {c['button_hover']};
+        border: 1px solid {c['active_border']};
+    }}
+    QToolButton#navOverflowButton::menu-indicator {{
+        image: none;
+        width: 0;
+    }}
 
     /* ====================================================== */
     /* Line Edits / Inputs                                     */
@@ -1207,6 +1223,21 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     QWidget#panelTabRow {{
         background-color: {c['mantle']};
     }}
+    QFrame#sidebarRail {{
+        background-color: {c['mantle']};
+        border-right: 1px solid {c['border']};
+    }}
+    QToolButton#sidebarRailButton {{
+        background-color: transparent;
+        color: {c['text']};
+        border: 1px solid transparent;
+        border-radius: {m['radius']}px;
+        font-weight: bold;
+    }}
+    QToolButton#sidebarRailButton:hover {{
+        background-color: {c['button_hover']};
+        border: 1px solid {c['active_border']};
+    }}
     QToolButton#panelTabAddButton {{
         background-color: {c['mantle']};
         color: {c['text']};
@@ -1341,8 +1372,6 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     QFrame#centerPanel {{
         background-color: {c['mantle']};
         border: none;
-        min-width: {m['center_panel_width']}px;
-        max-width: {m['center_panel_width']}px;
     }}
     QFrame#centerPanel QPushButton {{
         background-color: {c['button']};

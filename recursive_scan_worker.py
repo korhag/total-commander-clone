@@ -176,11 +176,20 @@ class FolderListingThread(QThread):
         self._cancel = True
 
     def run(self):
-        entries, error = listFolderEntries(
-            self._root,
-            self._show_hidden,
-            cancel_check=lambda: self._cancel,
-        )
+        from archive_backend import listArchiveFolder, splitArchivePath
+
+        if splitArchivePath(self._root):
+            entries, error = listArchiveFolder(
+                self._root,
+                self._show_hidden,
+                cancel_check=lambda: self._cancel,
+            )
+        else:
+            entries, error = listFolderEntries(
+                self._root,
+                self._show_hidden,
+                cancel_check=lambda: self._cancel,
+            )
         self.entries = entries
         self.error = error
         self.was_cancelled = self._cancel

@@ -12,13 +12,24 @@ from collections import namedtuple
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QMenu, QInputDialog, QMessageBox, QApplication,
-    QHBoxLayout, QPushButton, QDialog, QFileDialog, QStyle,
+    QMenu, QInputDialog, QMessageBox,
+    QHBoxLayout, QPushButton, QDialog, QFileDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QTimer, QRect, QPoint
 from PyQt5.QtGui import QDesktopServices, QPainter, QPen, QColor, QPalette
 
 from bookmark_dialogs import BookmarkEditDialog
+from file_icons import iconFor
+
+
+# ------------------------------------------------------------
+# Function: _iconForPath
+# Purpose: Themed folder, or the file-type icon for a file path.
+# ------------------------------------------------------------
+def _iconForPath(path, is_file):
+    if is_file:
+        return iconFor(os.path.basename(path or ""), is_dir=False)
+    return iconFor("", is_dir=True)
 
 
 # Data roles for tree items
@@ -53,18 +64,14 @@ def _nodeToItem(node, parent_item=None):
         item.setData(0, ROLE_PATH, path)
         item.setToolTip(0, path)
         is_file = node.get("kind") == "file" or (path and os.path.isfile(path))
-        icon = QApplication.instance().style().standardIcon(
-            QStyle.SP_FileIcon if is_file else QStyle.SP_DirIcon
-        )
-        item.setIcon(0, icon)
+        item.setIcon(0, _iconForPath(path, is_file))
         return item
     if node.get("type") == TYPE_GROUP:
         item = QTreeWidgetItem(parent_item, [node.get("name", "")])
         item.setData(0, ROLE_TYPE, TYPE_GROUP)
         item.setFlags(item.flags() | Qt.ItemIsDropEnabled)
         item.setToolTip(0, f"Group: {node.get('name', '')}")
-        icon = QApplication.instance().style().standardIcon(QStyle.SP_DirLinkIcon)
-        item.setIcon(0, icon)
+        item.setIcon(0, iconFor("", is_dir=True))
         item.setExpanded(node.get("expanded", True))
         for child in node.get("children", []):
             _nodeToItem(child, item)
@@ -510,9 +517,7 @@ class BookmarksTreeWidget(QTreeWidget):
         group_item.setData(0, ROLE_TYPE, TYPE_GROUP)
         group_item.setFlags(group_item.flags() | Qt.ItemIsDropEnabled)
         group_item.setToolTip(0, f"Group: {group_name}")
-        group_item.setIcon(
-            0, QApplication.instance().style().standardIcon(QStyle.SP_DirLinkIcon)
-        )
+        group_item.setIcon(0, iconFor("", is_dir=True))
         group_item.addChild(taken_target)
         group_item.addChild(taken_source)
 
@@ -541,6 +546,27 @@ class BookmarksTreeWidget(QTreeWidget):
             if node:
                 structure.append(node)
         return structure
+
+    # --------------------------------------------------------
+    # Method: refreshIcons
+    # Purpose: Recolor folders and file-type icons after a theme change.
+    # --------------------------------------------------------
+    def refreshIcons(self):
+        root = self.invisibleRootItem()
+        for index in range(root.childCount()):
+            _refreshItemIcon(root.child(index))
+
+
+def _refreshItemIcon(item):
+    kind = item.data(0, ROLE_TYPE)
+    if kind == TYPE_GROUP:
+        item.setIcon(0, iconFor("", is_dir=True))
+    elif kind == TYPE_BOOKMARK:
+        path = item.data(0, ROLE_PATH) or ""
+        is_file = bool(path) and os.path.isfile(path)
+        item.setIcon(0, _iconForPath(path, is_file))
+    for index in range(item.childCount()):
+        _refreshItemIcon(item.child(index))
 
 
 # ------------------------------------------------------------
@@ -606,6 +632,10 @@ class BookmarksPanel(QWidget):
         self._tree.clear()
         for node in self._settings.getBookmarksStructure():
             _nodeToItem(node, self._tree.invisibleRootItem())
+
+    def refreshIcons(self):
+        """Recolor folders after the theme changes."""
+        self._tree.refreshIcons()
 
     def _collapseAll(self):
         self._tree.collapseAll()
@@ -685,10 +715,7 @@ class BookmarksPanel(QWidget):
         item.setData(0, ROLE_PATH, path)
         item.setToolTip(0, path)
         is_file = path and os.path.isfile(path)
-        icon = QApplication.instance().style().standardIcon(
-            QStyle.SP_FileIcon if is_file else QStyle.SP_DirIcon
-        )
-        item.setIcon(0, icon)
+        item.setIcon(0, _iconForPath(path, is_file))
 
     def _editBookmark(self, item):
         path = item.data(0, ROLE_PATH) or ""

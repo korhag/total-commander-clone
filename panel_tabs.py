@@ -9,6 +9,8 @@ are leaving and restores the other tab.
 import copy
 import os
 
+from archive_backend import isNavigablePath
+from responsive_layout import PANEL_TAB_MAX_WIDTH, PANEL_TAB_MIN_WIDTH, scaled
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QMenu, QTabBar, QToolButton
 
@@ -106,7 +108,7 @@ class PanelTabBar(QTabBar):
         self.setDocumentMode(True)
         self.setExpanding(False)
         self.setUsesScrollButtons(True)
-        self.setElideMode(Qt.ElideRight)
+        self.setElideMode(Qt.ElideMiddle)
         self.setDrawBase(True)
         self.setTabsClosable(False)
 
@@ -117,6 +119,24 @@ class PanelTabBar(QTabBar):
         self.currentChanged.connect(self._onCurrentChanged)
         self.tabCloseRequested.connect(self.closeTab)
         panel.pathChanged.connect(self._onPathChanged)
+
+    # --------------------------------------------------------
+    # Method: tabSizeHint
+    # Purpose: Keep each tab between a minimum and a maximum
+    #          so one long folder name cannot push the others
+    #          off the strip. The tooltip still has the full path.
+    #          The middle of the name is what gets cut.
+    # --------------------------------------------------------
+    def tabSizeHint(self, index):
+        hint = super().tabSizeHint(index)
+        scale = 1.0
+        panel = getattr(self, "_panel", None)
+        if panel is not None:
+            scale = float(getattr(panel, "_layout_scale", 1.0) or 1.0)
+        min_w = scaled(PANEL_TAB_MIN_WIDTH, scale)
+        max_w = scaled(PANEL_TAB_MAX_WIDTH, scale)
+        hint.setWidth(max(min_w, min(int(hint.width()), max_w)))
+        return hint
 
     # --------------------------------------------------------
     # Method: newTab
@@ -133,7 +153,7 @@ class PanelTabBar(QTabBar):
     #          so the folder is not hidden by the current search.
     # --------------------------------------------------------
     def openInNewTab(self, path):
-        if not path or not os.path.isdir(path):
+        if not isNavigablePath(path):
             return False
         self._rememberCurrent()
         state = copy.deepcopy(self._panel.getHistoryData())
@@ -378,7 +398,7 @@ class PanelTabBar(QTabBar):
             path = ""
             if isinstance(state, dict):
                 path = state.get("current_path") or ""
-            if isinstance(path, str) and path and os.path.isdir(path):
+            if isinstance(path, str) and isNavigablePath(path):
                 self._panel.restoreHistoryData(state)
         finally:
             self._guard = False

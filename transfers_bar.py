@@ -42,6 +42,8 @@ def _operationVerb(task):
         FileOperationWorker.OPERATION_COPY: "Copying",
         FileOperationWorker.OPERATION_MOVE: "Moving",
         FileOperationWorker.OPERATION_DELETE: "Deleting",
+        "extract": "Extracting",
+        "compress": "Compressing",
     }
     return names.get(task.operation, "Processing")
 

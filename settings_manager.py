@@ -129,6 +129,7 @@ DEFAULT_STATE = {
     "saved_file_filters": [],
     "sidebar_state": {
         "current_tab": "bookmarks",
+        "hidden": False,
     },
 }
 

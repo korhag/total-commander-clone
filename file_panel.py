@@ -32,6 +32,7 @@ from recursive_scan_worker import (
     waitForThreads,
 )
 from thumbnail_loader import ThumbnailLoader, isThumbnailCandidate
+from file_icons import iconFor
 
 
 # Pattern for splitting names into text vs digit runs (natural sort).
@@ -103,18 +104,28 @@ def natural_sort_key(name):
     return parts
 
 
+from responsive_layout import (
+    COLUMNS_HIDDEN_BY_TIER,
+    FILTER_MIN_WIDTH_COMPACT,
+    FILTER_MIN_WIDTH_WIDE,
+    PANEL_MIN_WIDTH,
+    TIER_NARROW,
+    TIER_WIDE,
+    layoutTier,
+    scaled,
+)
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QLineEdit,
     QPushButton, QAbstractItemView, QHeaderView, QFrame, QLabel,
     QStyledItemDelegate, QStyle, QApplication, QComboBox,
-    QFileIconProvider, QInputDialog, QMessageBox, QProgressDialog,
-    QMenu, QAction, QActionGroup, QCheckBox,
+    QInputDialog, QMessageBox, QProgressDialog,
+    QMenu, QAction, QActionGroup, QCheckBox, QToolButton,
 )
 from PyQt5.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QVariant, QMimeData,
     QUrl, pyqtSignal, QSortFilterProxyModel, QPoint, QTimer, QEvent,
     QItemSelectionModel, QSize, QItemSelection, QItemSelectionRange,
-    QFileInfo, QMimeDatabase, QFileSystemWatcher,
+    QMimeDatabase, QFileSystemWatcher,
 )
 from PyQt5.QtGui import (
     QDrag, QDesktopServices, QIcon, QKeySequence,
@@ -268,6 +279,12 @@ def build_entry_tooltip_html(entry, recursive=False):
         f"<tr><td style='color:#aaa;padding:2px 10px 2px 0;'>Listed type</td>"
         f"<td style='padding:2px 0;'>{html.escape(entry['type'])}</td></tr>"
     )
+
+    if entry.get("in_archive"):
+        rows_html.append(
+            f"<tr><td style='color:#aaa;padding:2px 10px 2px 0;'>Location</td>"
+            f"<td style='padding:2px 0;'>Inside archive</td></tr>"
+        )
 
     title = "Folder" if is_dir else "File"
     icon = "&#128193;" if is_dir else "&#128196;"
@@ -473,7 +490,6 @@ class FileSystemModel(QAbstractTableModel):
         self._entries = []
         self._show_hidden = False
         self._recursive = False
-        self._icon_provider = QFileIconProvider()
         self._thumbnails = ThumbnailLoader(self)
         self._thumbnails.thumbnailReady.connect(self._onThumbnailReady)
         self._show_thumbnails = False
@@ -566,6 +582,7 @@ class FileSystemModel(QAbstractTableModel):
         if (
             self._show_thumbnails
             and not entry.get("is_dir")
+            and not entry.get("in_archive")
             and isThumbnailCandidate(entry.get("name") or "", entry.get("size", -1))
         ):
             if full_path:
@@ -578,7 +595,7 @@ class FileSystemModel(QAbstractTableModel):
             )
             if icon is not None:
                 return icon
-        return self._icon_provider.icon(QFileInfo(full_path))
+        return iconFor(entry.get("name") or "", is_dir=bool(entry.get("is_dir")))
 
     def listingFromCache(self):
         return bool(self._listing_from_cache)
@@ -812,7 +829,11 @@ class FileSystemModel(QAbstractTableModel):
         self._listing_from_cache = False
         self._load_error = ""
 
-        if not self._recursive:
+        from archive_backend import splitArchivePath
+
+        # Subfolders mode reads the real disk. An archive is one level
+        # at a time, same as opening a folder inside it.
+        if not self._recursive or splitArchivePath(path):
             self._loadDirectoryFlat(path, gen)
             return
 
@@ -1705,6 +1726,14 @@ class FilePanel(QWidget):
         self._freeze_column_widths = False
         self._column_width_locked = {k: False for k in self.COLUMN_VISIBILITY_KEYS}
         self._locked_column_width_px = {}
+        # The user's column choice. Width tiers hide Type and Date on
+        # screen without writing over this, so a narrow window is not saved.
+        self._user_column_visibility = {k: True for k in self.COLUMN_VISIBILITY_KEYS}
+        self._layout_tier = TIER_WIDE
+        self._layout_scale = 1.0
+        self._overflow_thumb_guard = False
+        self._filter_options_has_icon = False
+        self._thumb_icon_set = False
         self._viewport_layout_timer = QTimer(self)
         self._viewport_layout_timer.setSingleShot(True)
         self._viewport_layout_timer.setInterval(50)
@@ -1941,6 +1970,7 @@ class FilePanel(QWidget):
         if filter_opts_icon.isNull():
             filter_opts_icon = style.standardIcon(QStyle.SP_FileDialogContentsView)
         if not filter_opts_icon.isNull():
+            self._filter_options_has_icon = True
             self._btn_filter_options.setIcon(filter_opts_icon)
             self._btn_filter_options.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
             self._btn_filter_options.setText("Settings")
@@ -1961,9 +1991,52 @@ class FilePanel(QWidget):
         if thumb_icon.isNull():
             thumb_icon = style.standardIcon(QStyle.SP_FileDialogInfoView)
         if not thumb_icon.isNull():
+            self._thumb_icon_set = True
             self._btn_thumbnails.setIcon(thumb_icon)
             self._btn_thumbnails.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
         self._btn_thumbnails.toggled.connect(self._onThumbnailsToggled)
+
+        self._btn_overflow = QToolButton()
+        self._btn_overflow.setObjectName("navOverflowButton")
+        self._btn_overflow.setText("\u22EF")
+        self._btn_overflow.setPopupMode(QToolButton.InstantPopup)
+        self._btn_overflow.setAutoRaise(False)
+        self._btn_overflow.setFocusPolicy(Qt.NoFocus)
+        self._btn_overflow.setFixedSize(30, NAV_BAR_HEIGHT)
+        self._btn_overflow.setToolTip(
+            "More\n\n"
+            "Navigation, drives, and path actions that do not fit on this row."
+        )
+        self._overflow_menu = QMenu(self._btn_overflow)
+        self._act_overflow_forward = self._overflow_menu.addAction("Forward")
+        self._act_overflow_forward.triggered.connect(lambda checked: self.goForward())
+        self._act_overflow_home = self._overflow_menu.addAction("Home")
+        self._act_overflow_home.triggered.connect(lambda checked: self._goHome())
+        self._act_overflow_new_folder = self._overflow_menu.addAction("New folder")
+        self._act_overflow_new_folder.triggered.connect(
+            lambda checked: self.createNewFolder()
+        )
+        self._act_overflow_thumbnails = self._overflow_menu.addAction("Thumbnails")
+        self._act_overflow_thumbnails.setCheckable(True)
+        self._act_overflow_thumbnails.toggled.connect(self._onOverflowThumbnails)
+        self._overflow_menu.addSeparator()
+        self._overflow_drives = self._overflow_menu.addMenu("Drives")
+        self._overflow_menu.addSeparator()
+        self._act_overflow_copy = self._overflow_menu.addAction("Copy path")
+        self._act_overflow_copy.triggered.connect(
+            lambda checked: self._copyPathToClipboard()
+        )
+        self._act_overflow_paste = self._overflow_menu.addAction("Paste path")
+        self._act_overflow_paste.triggered.connect(
+            lambda checked: self._pastePathAndNavigate()
+        )
+        self._act_overflow_browse = self._overflow_menu.addAction("Open in file manager")
+        self._act_overflow_browse.triggered.connect(
+            lambda checked: self._openCurrentFolderInSystemExplorer()
+        )
+        self._overflow_menu.aboutToShow.connect(self._prepareOverflowMenu)
+        self._btn_overflow.setMenu(self._overflow_menu)
+        self._btn_overflow.setVisible(False)
 
         self._btn_new_folder = QPushButton()
         self._btn_new_folder.setObjectName("navButton")
@@ -1994,6 +2067,7 @@ class FilePanel(QWidget):
         nav_layout.addWidget(self._btn_clear_filter, 0, Qt.AlignVCenter)
         nav_layout.addWidget(self._btn_filter_options, 0, Qt.AlignVCenter)
         nav_layout.addWidget(self._btn_thumbnails, 0, Qt.AlignVCenter)
+        nav_layout.addWidget(self._btn_overflow, 0, Qt.AlignVCenter)
 
         layout.addLayout(nav_layout)
 
@@ -2099,10 +2173,147 @@ class FilePanel(QWidget):
             self._drive_line_edit.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
         self._filter_edit.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
+        self._btn_overflow.setFixedSize(btn_w, h)
         self._ui_metrics = metrics
         self._layout_scale = float(metrics.get("layout_scale", 1.0))
         self._applyRowMetrics()
         self._refreshHeaderSectionMinimums()
+        self._applyResponsiveTier(force_nav=True)
+
+    # --------------------------------------------------------
+    # Method: resizeEvent
+    # Purpose: Pick a wide, compact, or narrow layout from this
+    #          panel's own width.
+    # --------------------------------------------------------
+    # --------------------------------------------------------
+    # Method: minimumSizeHint
+    # Purpose: Let the panel become narrower than the full button
+    #          row. The tier then hides what does not fit. Without
+    #          this, the row's own minimum keeps the panel wide
+    #          and the buttons clip.
+    # --------------------------------------------------------
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        scale = float(getattr(self, "_layout_scale", 1.0) or 1.0)
+        floor = scaled(PANEL_MIN_WIDTH, scale)
+        if hint.width() > floor:
+            hint.setWidth(floor)
+        return hint
+
+    # --------------------------------------------------------
+    # Method: resizeEvent
+    # Purpose: Pick a wide, compact, or narrow layout from this
+    #          panel's own width.
+    # --------------------------------------------------------
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._applyResponsiveTier()
+
+    # --------------------------------------------------------
+    # Method: _applyResponsiveTier
+    # Purpose: Show icon-only buttons, or the overflow menu,
+    #          when this panel is too narrow for the full row.
+    #          Columns follow the same tier. Repeating a tier
+    #          does not rebuild the row.
+    # --------------------------------------------------------
+    def _applyResponsiveTier(self, force_nav=False):
+        width = self.width()
+        scale = float(getattr(self, "_layout_scale", 1.0) or 1.0)
+        if width <= 1:
+            tier = TIER_WIDE
+        else:
+            tier = layoutTier(width, scale)
+        changed = tier != self._layout_tier
+        self._layout_tier = tier
+        if not force_nav and not changed:
+            return
+        self._applyResponsiveNav(tier)
+        if changed:
+            self._applyResponsiveColumns()
+
+    # --------------------------------------------------------
+    # Method: _applyResponsiveNav
+    # Purpose: Show or hide the controls that do not fit, and
+    #          shorten button labels. The clear button's
+    #          visibility stays with the filter, not the tier.
+    # --------------------------------------------------------
+    def _applyResponsiveNav(self, tier):
+        narrow = tier == TIER_NARROW
+        wide = tier == TIER_WIDE
+        for button in (
+            self._btn_forward,
+            self._btn_home,
+            self._btn_new_folder,
+            self._btn_copy_path,
+            self._btn_paste_path,
+            self._btn_browse_folder,
+        ):
+            button.setVisible(not narrow)
+        self._btn_overflow.setVisible(narrow)
+        self._syncDriveContainerVisibility()
+        self._btn_clear_filter.setText("\u2715 Clear" if wide else "\u2715")
+        if wide:
+            self._btn_filter_options.setText("Settings")
+            self._btn_thumbnails.setText("Thumbnails")
+        else:
+            self._btn_filter_options.setText(
+                "" if self._filter_options_has_icon else "\u2699"
+            )
+            self._btn_thumbnails.setText("" if self._thumb_icon_set else "Img")
+        floor = FILTER_MIN_WIDTH_WIDE if wide else FILTER_MIN_WIDTH_COMPACT
+        scale = float(getattr(self, "_layout_scale", 1.0) or 1.0)
+        self._filter_edit.setMinimumWidth(scaled(floor, scale))
+
+    # --------------------------------------------------------
+    # Method: _syncDriveContainerVisibility
+    # Purpose: The drive picker leaves the row in the narrow
+    #          tier. Drives stay in the overflow menu.
+    # --------------------------------------------------------
+    def _syncDriveContainerVisibility(self):
+        if not hasattr(self, "_drive_container"):
+            return
+        self._drive_container.setVisible(self._layout_tier != TIER_NARROW)
+
+    # --------------------------------------------------------
+    # Method: _prepareOverflowMenu
+    # Purpose: Match Forward and Thumbnails to the buttons, and
+    #          rebuild the drive list, just before the menu opens.
+    # --------------------------------------------------------
+    def _prepareOverflowMenu(self):
+        self._act_overflow_forward.setEnabled(self._btn_forward.isEnabled())
+        self._overflow_thumb_guard = True
+        self._act_overflow_thumbnails.setChecked(self._btn_thumbnails.isChecked())
+        self._overflow_thumb_guard = False
+        self._rebuildOverflowDrives()
+
+    # --------------------------------------------------------
+    # Method: _onOverflowThumbnails
+    # Purpose: The checkable overflow action uses the same
+    #          thumbnail toggle as the button on the row.
+    # --------------------------------------------------------
+    def _onOverflowThumbnails(self, checked):
+        if self._overflow_thumb_guard:
+            return
+        self.setShowThumbnails(bool(checked), persist=True)
+
+    # --------------------------------------------------------
+    # Method: _rebuildOverflowDrives
+    # Purpose: Fill the Drives submenu from the current mount list.
+    # --------------------------------------------------------
+    def _rebuildOverflowDrives(self):
+        self._refreshDrives()
+        menu = self._overflow_drives
+        menu.clear()
+        if not self._drive_entries:
+            empty = menu.addAction("No drives")
+            empty.setEnabled(False)
+            return
+        for entry in self._drive_entries:
+            action = menu.addAction(entry.label)
+            action.setToolTip(entry.path)
+            action.triggered.connect(
+                lambda checked, path=entry.path: self._openDrivePath(path)
+            )
 
     # --------------------------------------------------------
     # Method: _applyRowMetrics
@@ -2132,6 +2343,10 @@ class FilePanel(QWidget):
     # Method: setShowThumbnails
     # Purpose: Toggle image previews for this panel and remember it.
     # --------------------------------------------------------
+    def refreshItemIcons(self):
+        """Repaint name icons after the theme accent changes."""
+        self._source_model._emitNameDecorationsChanged()
+
     def setShowThumbnails(self, enabled, persist=True):
         enabled = bool(enabled)
         self._btn_thumbnails.blockSignals(True)
@@ -2532,24 +2747,50 @@ class FilePanel(QWidget):
         vis_dict = self._sanitizeColumnVisibility(vis_dict)
         if not vis_dict:
             return
+        user = dict(self._userColumnVisibility())
+        for key in self.COLUMN_VISIBILITY_KEYS:
+            if key in vis_dict:
+                user[key] = bool(vis_dict[key])
+        self._user_column_visibility = user
+        self._applyResponsiveColumns()
+
+    def getColumnVisibility(self):
+        """Return the user's column choice, not columns hidden only for width."""
+        user = self._userColumnVisibility()
+        return {
+            key: bool(user.get(key, True))
+            for key in self.COLUMN_VISIBILITY_KEYS
+        }
+
+    # --------------------------------------------------------
+    # Method: _userColumnVisibility
+    # Purpose: The saved show/hide choice for each column.
+    # --------------------------------------------------------
+    def _userColumnVisibility(self):
+        stored = getattr(self, "_user_column_visibility", None)
+        if not isinstance(stored, dict):
+            stored = {key: True for key in self.COLUMN_VISIBILITY_KEYS}
+            self._user_column_visibility = stored
+        return stored
+
+    # --------------------------------------------------------
+    # Method: _applyResponsiveColumns
+    # Purpose: Hide Type (compact) and Date Modified (narrow)
+    #          when the user still has them turned on. Widening
+    #          the panel shows them again.
+    # --------------------------------------------------------
+    def _applyResponsiveColumns(self):
+        hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
+        user = self._userColumnVisibility()
         for col, key in enumerate(self.COLUMN_VISIBILITY_KEYS):
             if col >= self._source_model.columnCount():
                 break
-            v = vis_dict.get(key)
-            if v is not None:
-                self._table.setColumnHidden(col, not bool(v))
+            show = bool(user.get(key, True)) and key not in hidden_keys
+            self._table.setColumnHidden(col, not show)
         if self._freeze_column_widths:
             self._applyColumnMinimumWidthsOnly()
         else:
             self._fitColumnsToViewport()
-
-    def getColumnVisibility(self):
-        """Return visibility flags for each column."""
-        return {
-            key: not self._table.isColumnHidden(col)
-            for col, key in enumerate(self.COLUMN_VISIBILITY_KEYS)
-            if col < self._source_model.columnCount()
-        }
 
     def relayoutColumns(self):
         """Initial viewport fit once, then only enforce column minimum widths."""
@@ -2672,9 +2913,11 @@ class FilePanel(QWidget):
     # Purpose: Loads a directory and pushes it to the history.
     # --------------------------------------------------------
     def navigateTo(self, path, add_to_history=True):
-        """Returns True when the folder was opened."""
+        """Returns True when the folder or archive was opened."""
+        from archive_backend import splitArchivePath
+
         path = os.path.normpath(path)
-        if not os.path.isdir(path):
+        if not os.path.isdir(path) and splitArchivePath(path) is None:
             return False
 
         if self.isRenaming():
@@ -2769,7 +3012,7 @@ class FilePanel(QWidget):
             self._clearDirectoryWatch()
             return
         current = self._source_model.currentPath()
-        if not current or not os.path.isdir(current):
+        if not current or not os.path.isdir(current) or self.isInArchive():
             self._clearDirectoryWatch()
             return
         self._setWatchedDirectory(current)
@@ -2935,6 +3178,16 @@ class FilePanel(QWidget):
                     for s in sources
                 ]
 
+        if op in ("extract", "compress"):
+            parent = os.path.dirname(dest_dir) if dest_dir else ""
+            touches = (dest_dir and under_root(dest_dir)) or (parent and under_root(parent))
+            from archive_backend import splitArchivePath
+
+            if touches and not splitArchivePath(root):
+                self.refresh(force_rescan=False)
+                return "updated"
+            return "unaffected"
+
         model = self._source_model
         if model.isRecursive():
             touched = False
@@ -3012,6 +3265,8 @@ class FilePanel(QWidget):
     #          the active panel).
     # --------------------------------------------------------
     def createNewFolder(self):
+        if self.isInArchive():
+            return
         current_path = self.currentPath()
         if not current_path:
             return
@@ -3037,6 +3292,17 @@ class FilePanel(QWidget):
     # --------------------------------------------------------
     def currentPath(self):
         return self._source_model.currentPath()
+
+    # --------------------------------------------------------
+    # Method: isInArchive
+    # Purpose: True when this panel is listing the inside of a
+    #          zip, 7z, rar, or other archive. That listing is
+    #          read-only.
+    # --------------------------------------------------------
+    def isInArchive(self):
+        from archive_backend import splitArchivePath
+
+        return splitArchivePath(self.currentPath() or "") is not None
 
     # --------------------------------------------------------
     # Method: selectedEntries
@@ -3223,6 +3489,8 @@ class FilePanel(QWidget):
         return self._rename_edit is not None and self._rename_edit.isVisible()
 
     def startRename(self):
+        if self.isInArchive():
+            return False
         if self._rename_edit is not None:
             self._dismissRenameEditor()
 
@@ -3406,8 +3674,10 @@ class FilePanel(QWidget):
             bool(data.get("filter_include_subfolders", False))
         )
 
+        from archive_backend import isNavigablePath
+
         current = data.get("current_path", "")
-        if current and os.path.isdir(current):
+        if isNavigablePath(current):
             self._history_index = self._historyIndexFromState(data, current)
             self.navigateTo(current, add_to_history=False)
         column_widths = self._sanitizeColumnWidths(data.get("column_widths"))
@@ -3519,7 +3789,7 @@ class FilePanel(QWidget):
     # --------------------------------------------------------
     def _onPathEdited(self):
         path = normalizePathInput(self._path_edit.text())
-        if path and os.path.isdir(path):
+        if path:
             self.navigateTo(path)
 
     def _copyPathToClipboard(self):
@@ -3537,10 +3807,9 @@ class FilePanel(QWidget):
         path = normalizePathInput(text)
         if not path:
             return
-        if os.path.isdir(path):
-            self._path_edit.setText(path)
-            self.navigateTo(path)
-        elif os.path.isfile(path):
+        if self.navigateTo(path):
+            return
+        if os.path.isfile(path):
             parent = os.path.dirname(path)
             if parent and os.path.isdir(parent):
                 self._path_edit.setText(parent)
@@ -3566,7 +3835,16 @@ class FilePanel(QWidget):
     #          was stopped), stay put and say so.
     # --------------------------------------------------------
     def _onDriveChanged(self, index):
-        target = self._drive_combo.itemData(index)
+        self._openDrivePath(self._drive_combo.itemData(index))
+
+    # --------------------------------------------------------
+    # Method: _openDrivePath
+    # Purpose: Open a drive or mount. If it cannot be opened
+    #          (for example a cloud mount that was stopped),
+    #          stay put and say so. Used by the combo and the
+    #          overflow menu.
+    # --------------------------------------------------------
+    def _openDrivePath(self, target):
         if not target:
             return
         if self.navigateTo(target):
@@ -3622,6 +3900,7 @@ class FilePanel(QWidget):
         self._drive_arrow.setVisible(has_drives)
         combo.blockSignals(False)
         self._syncDriveCombo(self._source_model.currentPath())
+        self._syncDriveContainerVisibility()
 
     # --------------------------------------------------------
     # Method: _syncDriveCombo
@@ -3671,11 +3950,19 @@ class FilePanel(QWidget):
         menu = QMenu(self)
         n = self._source_model.columnCount()
         hdr = self._table.horizontalHeader()
+        user = self._userColumnVisibility()
+        hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
         for col in range(n):
             label = FileSystemModel.COLUMNS[col]
+            key = self._columnKeyAt(col)
             act = QAction(label, menu)
             act.setCheckable(True)
-            act.setChecked(not self._table.isColumnHidden(col))
+            act.setChecked(bool(user.get(key, True)))
+            if key in hidden_keys and user.get(key, True):
+                act.setToolTip(
+                    "Hidden while this panel is narrow. "
+                    "It comes back when the panel is wider."
+                )
             act.toggled.connect(
                 lambda checked, c=col, a=act: self._applyColumnVisibilityToggle(c, checked, a)
             )
@@ -3728,13 +4015,18 @@ class FilePanel(QWidget):
         menu.exec_(hdr.mapToGlobal(pos))
 
     def _applyColumnVisibilityToggle(self, col, visible, action):
+        key = self._columnKeyAt(col)
+        if key is None:
+            return
+        user = dict(self._userColumnVisibility())
         if not visible:
-            others = sum(
-                1
-                for c in range(self._source_model.columnCount())
-                if c != col and not self._table.isColumnHidden(c)
-            )
-            if others == 0:
+            user[key] = False
+            hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
+            still_shown = [
+                name for name in self.COLUMN_VISIBILITY_KEYS
+                if user.get(name, False) and name not in hidden_keys
+            ]
+            if not still_shown:
                 QMessageBox.information(
                     self,
                     "Columns",
@@ -3744,9 +4036,11 @@ class FilePanel(QWidget):
                 action.setChecked(True)
                 action.blockSignals(False)
                 return
-        self._table.setColumnHidden(col, not visible)
+        else:
+            user[key] = True
+        self._user_column_visibility = user
         self._freeze_column_widths = True
-        self._applyColumnMinimumWidthsOnly()
+        self._applyResponsiveColumns()
 
     def _distributeColumnsEvenly(self):
         """Give each unlocked visible column an equal share; locked widths stay fixed."""
@@ -4019,10 +4313,19 @@ class FilePanel(QWidget):
         entry = self._source_model.entryAt(source_index.row())
         if entry is None:
             return
+        full_path = entry.get("full_path") or ""
         if entry["is_dir"]:
-            self.navigateTo(entry["full_path"])
-        else:
-            self.fileDoubleClicked.emit(entry)
+            self.navigateTo(full_path)
+            return
+        from archive_backend import find7zExecutable, isArchiveFile
+
+        # A zip on disk opens in the panel. Without 7-Zip, the app
+        # opens it with the system handler instead.
+        if isArchiveFile(full_path) and not entry.get("in_archive"):
+            if find7zExecutable():
+                self.navigateTo(full_path)
+                return
+        self.fileDoubleClicked.emit(entry)
 
     def _onFilesDropped(self, file_paths, drop_target, is_copy):
         self.activated.emit()
@@ -4064,7 +4367,9 @@ class FilePanel(QWidget):
                 )
             else:
                 text = f"Filter on \u00b7 {text}"
-        if self._source_model.isRecursive():
+        if self.isInArchive():
+            text += "  \u00b7  Archive"
+        if self._source_model.isRecursive() and not self.isInArchive():
             if self._source_model.listingFromCache():
                 text += "  \u00b7  Subfolders (cached)"
             elif self._source_model.quietScanPending():

@@ -374,6 +374,62 @@ RUNCMD
 }
 
 # ------------------------------------------------------------
+# 7-Zip command-line tool (archive browse / extract / compress).
+# Failure here is a warning: the app still runs, and archive
+# actions explain how to install 7-Zip.
+# ------------------------------------------------------------
+install_sevenzip() {
+  if command -v 7zz >/dev/null 2>&1 || command -v 7z >/dev/null 2>&1 || command -v 7za >/dev/null 2>&1; then
+    info "7-Zip is already installed."
+    return 0
+  fi
+  info "7-Zip not found; attempting to install it..."
+  case "$OS" in
+    linux)
+      if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        case "${ID:-}${ID_LIKE:-}" in
+          *arch*|*manjaro*|*endeavouros*)
+            run_sudo pacman -S --needed --noconfirm 7zip && return 0
+            ;;
+          *debian*|*ubuntu*|*mint*|*pop*)
+            if run_sudo apt-get update -qq && run_sudo apt-get install -y 7zip; then
+              return 0
+            fi
+            run_sudo apt-get install -y p7zip-full && return 0
+            ;;
+          *fedora*|*rhel*|*centos*|*rocky*|*alma*)
+            if run_sudo dnf install -y 7zip; then
+              return 0
+            fi
+            run_sudo dnf install -y p7zip p7zip-plugins && return 0
+            ;;
+          *suse*)
+            run_sudo zypper install -y 7zip && return 0
+            ;;
+        esac
+      fi
+      ;;
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install sevenzip && return 0
+      fi
+      ;;
+    windows)
+      if command -v winget >/dev/null 2>&1; then
+        winget install -e --id 7zip.7zip --accept-package-agreements --accept-source-agreements && return 0
+      fi
+      ;;
+  esac
+  warn "Could not install 7-Zip. Archive browsing needs it."
+  warn "  Linux: install the 7zip package (Debian may call it p7zip-full)."
+  warn "  macOS: brew install sevenzip"
+  warn "  Windows: winget install 7zip.7zip"
+  return 0
+}
+
+# ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
 main() {
@@ -387,6 +443,7 @@ main() {
   "${PY_CMD[@]}" --version
 
   create_venv_and_install "${PY_CMD[@]}"
+  install_sevenzip || warn "Continuing without 7-Zip."
   write_run_sh
   if [[ "$OS" == "darwin" ]]; then
     write_run_command_macos

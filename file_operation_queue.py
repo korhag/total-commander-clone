@@ -49,6 +49,12 @@ class FileOperationTask:
     clear_clipboard_on_success: bool = False
     relative_paths: Optional[List[str]] = None
     on_success: Optional[Callable[[], None]] = field(default=None, repr=False)
+    archive_path: str = ""
+    members: Optional[List[str]] = None
+    archive_format: str = ""
+    password: str = ""
+    compression_level: str = ""
+    base_dir: str = ""
 
     def summaryLabel(self):
         """Short label for list rows and the transfers bar."""
@@ -57,6 +63,8 @@ class FileOperationTask:
             FileOperationWorker.OPERATION_COPY: "Copy",
             FileOperationWorker.OPERATION_MOVE: "Move",
             FileOperationWorker.OPERATION_DELETE: "Delete",
+            "extract": "Extract",
+            "compress": "Compress",
         }
         op = op_names.get(self.operation, self.operation.capitalize())
         if self.relative_paths:
@@ -64,6 +72,8 @@ class FileOperationTask:
         if self.operation == FileOperationWorker.OPERATION_DELETE:
             return f"{op} {count} item(s)"
         dest = self.destination or ""
+        if self.operation == "compress":
+            dest = os.path.basename(dest) or dest
         if len(dest) > 40:
             dest = "…" + dest[-37:]
         return f"{op} {count} item(s) → {dest}"
@@ -142,6 +152,48 @@ class FileOperationQueue(QObject):
             FileOperationWorker.OPERATION_DELETE, file_paths, ""
         )
 
+    def enqueueExtract(
+        self,
+        archive_path,
+        destination,
+        members=None,
+        password="",
+        on_success=None,
+    ):
+        """Extract a whole archive (members is None) or those members."""
+        sources = list(members) if members else [archive_path]
+        return self._enqueue(
+            "extract",
+            sources,
+            destination,
+            on_success,
+            archive_path=archive_path,
+            members=list(members) if members else None,
+            password=password or "",
+        )
+
+    def enqueueCompress(
+        self,
+        sources,
+        archive_out,
+        fmt,
+        level,
+        password="",
+        base_dir="",
+        on_success=None,
+    ):
+        """Create one archive. archive_out is the new file, not a folder."""
+        return self._enqueue(
+            "compress",
+            sources,
+            archive_out,
+            on_success,
+            archive_format=fmt or "zip",
+            password=password or "",
+            compression_level=level or "normal",
+            base_dir=base_dir or "",
+        )
+
     def cancelActive(self):
         """Cancel the currently running task."""
         if self._current_task and self._worker:
@@ -196,6 +248,12 @@ class FileOperationQueue(QObject):
         on_success=None,
         clear_clipboard_on_success=False,
         relative_paths=None,
+        archive_path="",
+        members=None,
+        archive_format="",
+        password="",
+        compression_level="",
+        base_dir="",
     ):
         if not file_paths:
             return None
@@ -212,6 +270,12 @@ class FileOperationQueue(QObject):
             on_success=on_success,
             clear_clipboard_on_success=clear_clipboard_on_success,
             relative_paths=rels,
+            archive_path=archive_path or "",
+            members=list(members) if members else None,
+            archive_format=archive_format or "",
+            password=password or "",
+            compression_level=compression_level or "",
+            base_dir=base_dir or "",
         )
         self._tasks.append(task)
         self.taskAdded.emit(task)
@@ -235,22 +299,49 @@ class FileOperationQueue(QObject):
         task.detail = "Preparing..."
         self.taskUpdated.emit(task)
 
-        self._worker = FileOperationWorker(
-            task.operation,
-            task.source_paths,
-            task.destination,
-            self,
-            relative_paths=task.relative_paths,
-        )
+        self._worker = self._createWorker(task)
         self._worker.progressChanged.connect(self._onProgress)
         self._worker.operationFinished.connect(self._onFinished)
         self._worker.errorOccurred.connect(self._onError)
         if task.operation in (
             FileOperationWorker.OPERATION_COPY,
             FileOperationWorker.OPERATION_MOVE,
+            "extract",
         ):
             self._worker.conflictDetected.connect(self._onConflictDetected)
         self._worker.start()
+
+    def _createWorker(self, task):
+        """Pick the thread class for this operation."""
+        if task.operation == "extract":
+            from archive_operations import ArchiveExtractWorker
+
+            return ArchiveExtractWorker(
+                task.archive_path,
+                task.members,
+                task.destination,
+                password=task.password,
+                parent=self,
+            )
+        if task.operation == "compress":
+            from archive_operations import ArchiveCompressWorker
+
+            return ArchiveCompressWorker(
+                task.source_paths,
+                task.destination,
+                task.archive_format,
+                task.compression_level,
+                password=task.password,
+                base_dir=task.base_dir,
+                parent=self,
+            )
+        return FileOperationWorker(
+            task.operation,
+            task.source_paths,
+            task.destination,
+            self,
+            relative_paths=task.relative_paths,
+        )
 
     def _onProgress(self, percent, file_name, detail):
         task = self._current_task
@@ -271,7 +362,11 @@ class FileOperationQueue(QObject):
         task = self._current_task
         if not task or not self._worker:
             return
-        op_name = "Copy" if task.operation == FileOperationWorker.OPERATION_COPY else "Move"
+        op_names = {
+            FileOperationWorker.OPERATION_COPY: "Copy",
+            "extract": "Extract",
+        }
+        op_name = op_names.get(task.operation, "Move")
         parent = self._parent_window
         dialog = ConflictDialog(source_path, dest_path, op_name, parent)
         if dialog.exec_() != QDialog.Accepted:
