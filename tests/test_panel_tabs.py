@@ -202,6 +202,35 @@ class TestPanelTabs(unittest.TestCase):
         self.assertEqual(active, 0)
         self.assertEqual(tabs[0]["current_path"], self.folder_a)
 
+    def test_tab_menu_can_open_that_folders_explorer_and_terminal(self):
+        self.tabs.newTab()
+        self.assertTrue(self.panel.navigateTo(self.folder_b))
+        self.assertEqual(
+            os.path.normcase(self.tabs.folderForTab(0)),
+            os.path.normcase(self.folder_a),
+        )
+        self.assertEqual(
+            os.path.normcase(self.tabs.folderForTab(1)),
+            os.path.normcase(self.folder_b),
+        )
+        titles = [
+            action.text()
+            for action in self.tabs.tabContextMenu(0).actions()
+            if action.text()
+        ]
+        self.assertIn("Open in Explorer", titles)
+        self.assertIn("Open in Terminal", titles)
+        for action in self.tabs.tabContextMenu(0).actions():
+            if action.text() in ("Open in Explorer", "Open in Terminal"):
+                self.assertTrue(action.isEnabled())
+        empty_titles = [
+            action.text()
+            for action in self.tabs.tabContextMenu(-1).actions()
+            if action.text()
+        ]
+        self.assertNotIn("Open in Explorer", empty_titles)
+        self.assertNotIn("Open in Terminal", empty_titles)
+
 
 # ------------------------------------------------------------
 # Class: TestPanelTabsInWindow

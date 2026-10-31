@@ -12,7 +12,7 @@ from collections import namedtuple
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel,
-    QMenu, QInputDialog, QMessageBox,
+    QMenu, QInputDialog, QMessageBox, QLineEdit,
     QHBoxLayout, QPushButton, QDialog, QFileDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QTimer, QRect, QPoint
@@ -37,6 +37,35 @@ ROLE_TYPE = Qt.UserRole
 ROLE_PATH = Qt.UserRole + 1
 TYPE_BOOKMARK = "bookmark"
 TYPE_GROUP = "group"
+
+
+# ------------------------------------------------------------
+# Function: _askText
+# Purpose: Ask for a short name on the main window. The line edit
+#          is focused on the next turn, after any drag or menu
+#          has released the keyboard.
+# ------------------------------------------------------------
+def _askText(parent, title, label, text):
+    window = parent.window() if parent is not None else None
+    dialog = QInputDialog(window or parent)
+    dialog.setWindowTitle(title)
+    dialog.setLabelText(label)
+    dialog.setTextValue(text or "")
+    dialog.setInputMode(QInputDialog.TextInput)
+    dialog.setWindowModality(Qt.ApplicationModal)
+    line = dialog.findChild(QLineEdit)
+
+    def _focusLine():
+        dialog.activateWindow()
+        if line is None:
+            return
+        line.setFocus()
+        line.selectAll()
+
+    QTimer.singleShot(0, _focusLine)
+    if dialog.exec_() != QDialog.Accepted:
+        return ""
+    return dialog.textValue().strip()
 
 # Share of a row (from the top) that means "insert before" rather than "on the row".
 _BOOKMARK_EDGE = 0.30
@@ -240,15 +269,23 @@ class BookmarksTreeWidget(QTreeWidget):
 
     # --------------------------------------------------------
     # Method: dropEvent
-    # Purpose: Apply the action chosen while dragging. IgnoreAction
-    #          stops Qt from deleting the source row a second time.
+    # Purpose: Apply the action chosen while dragging. A new group
+    #          asks for its name only after this returns, so the drag
+    #          has released the keyboard. IgnoreAction stops Qt from
+    #          deleting the source row a second time.
     # --------------------------------------------------------
     def dropEvent(self, event):
         moving = self.currentItem()
         action = self._drop_action
         self._setDropAction(None)
         if moving is not None and action is not None and action.kind != "invalid":
-            self._applyDropAction(moving, action)
+            if action.kind == "group":
+                QTimer.singleShot(
+                    0,
+                    lambda item=moving, drop=action: self._promptCreateGroup(item, drop),
+                )
+            else:
+                self._applyDropAction(moving, action)
         event.setDropAction(Qt.IgnoreAction)
         event.accept()
 
@@ -460,22 +497,33 @@ class BookmarksTreeWidget(QTreeWidget):
     #          then select the moved row so its new place is visible.
     # --------------------------------------------------------
     def _applyDropAction(self, moving, action):
-        if moving is None or action is None or action.kind == "invalid":
+        if moving is None or action is None or action.kind in ("invalid", "group"):
             return None
-        if action.kind == "group":
-            name, ok = QInputDialog.getText(
-                self,
-                "Create Group",
-                "Create a new group containing these items. Group name:",
-                text="New Group",
-            )
-            if not ok or not name.strip():
-                return None
-            placed = self._createGroupWith(action.target, moving, name.strip())
-        else:
-            placed = self._moveItem(moving, action.parent, action.index)
-            if placed is not None and action.kind == "into" and action.target is not None:
-                action.target.setExpanded(True)
+        placed = self._moveItem(moving, action.parent, action.index)
+        if placed is not None and action.kind == "into" and action.target is not None:
+            action.target.setExpanded(True)
+        if placed is None:
+            return None
+        self.setCurrentItem(placed)
+        self.scrollToItem(placed)
+        self.structureChanged.emit()
+        return placed
+
+    # --------------------------------------------------------
+    # Method: _promptCreateGroup
+    # Purpose: Ask for the group name after the drop has ended,
+    #          then wrap the two rows. Cancel leaves them as they are.
+    # --------------------------------------------------------
+    def _promptCreateGroup(self, moving, action):
+        name = _askText(
+            self,
+            "Create Group",
+            "Create a new group containing these items. Group name:",
+            "New Group",
+        )
+        if not name:
+            return None
+        placed = self._createGroupWith(action.target, moving, name)
         if placed is None:
             return None
         self.setCurrentItem(placed)
@@ -747,15 +795,15 @@ class BookmarksPanel(QWidget):
         self._emitStructureChanged()
 
     def _renameGroup(self, item):
-        name, ok = QInputDialog.getText(self, "Rename Group", "Group name:", text=item.text(0))
-        if ok and name.strip():
-            item.setText(0, name.strip())
+        name = _askText(self, "Rename Group", "Group name:", item.text(0))
+        if name:
+            item.setText(0, name)
             self._emitStructureChanged()
 
     def _renameBookmark(self, item):
-        name, ok = QInputDialog.getText(self, "Rename Bookmark", "Bookmark name:", text=item.text(0))
-        if ok and name.strip():
-            item.setText(0, name.strip())
+        name = _askText(self, "Rename Bookmark", "Bookmark name:", item.text(0))
+        if name:
+            item.setText(0, name)
             self._emitStructureChanged()
 
     def _deleteGroup(self, item):

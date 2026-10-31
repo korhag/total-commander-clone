@@ -1102,6 +1102,8 @@ class FileSystemModel(QAbstractTableModel):
             if role == Qt.ToolTipRole:
                 if 0 <= section < len(self.COLUMN_TOOLTIPS):
                     return self.COLUMN_TOOLTIPS[section]
+            if role == Qt.TextAlignmentRole and section == 1:
+                return Qt.AlignRight | Qt.AlignVCenter
         return QVariant()
 
     def flags(self, index):
@@ -1411,7 +1413,7 @@ class FileTableView(QTableView):
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionsMovable(False)
+        header.setSectionsMovable(True)
         header.setHighlightSections(False)
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -1421,6 +1423,62 @@ class FileTableView(QTableView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.viewportResized.emit()
+
+    # --------------------------------------------------------
+    # Method: keyPressEvent
+    # Purpose: Home and End move between rows. QTableView would
+    #          otherwise move between columns, so those keys
+    #          did nothing useful in this list.
+    # --------------------------------------------------------
+    def keyPressEvent(self, event):
+        key = event.key()
+        mods = event.modifiers()
+        if key in (Qt.Key_Home, Qt.Key_End) and not (
+            mods & (Qt.AltModifier | Qt.MetaModifier)
+        ):
+            self._moveCursorToEnd(
+                key == Qt.Key_End,
+                bool(mods & Qt.ShiftModifier),
+            )
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    # --------------------------------------------------------
+    # Method: _moveCursorToEnd
+    # Purpose: Select the first or last row. Shift keeps the
+    #          rows between the old cursor and the new one.
+    # --------------------------------------------------------
+    def _moveCursorToEnd(self, to_end, extend):
+        model = self.model()
+        if model is None:
+            return
+        count = model.rowCount()
+        if count <= 0:
+            return
+        row = count - 1 if to_end else 0
+        index = model.index(row, 0)
+        selection = self.selectionModel()
+        if extend and selection is not None:
+            anchor = self.currentIndex()
+            anchor_row = anchor.row() if anchor.isValid() else row
+            top = min(anchor_row, row)
+            bottom = max(anchor_row, row)
+            chosen = QItemSelection(
+                model.index(top, 0),
+                model.index(bottom, 0),
+            )
+            selection.select(
+                chosen,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
+        self.setCurrentIndex(index)
+        if not extend and selection is not None:
+            selection.select(
+                index,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
+        self.scrollTo(index)
 
     def renamingRow(self):
         return self._renaming_row
@@ -1701,6 +1759,7 @@ class FilePanel(QWidget):
     filesDropped = pyqtSignal(list, str, bool)
     activated = pyqtSignal()
     dateModifiedFormatChanged = pyqtSignal(str)
+    favoriteRequested = pyqtSignal()
     # Emitted after this panel accepts a finished folder listing.
     listingFinished = pyqtSignal()
 
@@ -1726,6 +1785,8 @@ class FilePanel(QWidget):
         self._freeze_column_widths = False
         self._column_width_locked = {k: False for k in self.COLUMN_VISIBILITY_KEYS}
         self._locked_column_width_px = {}
+        self._user_sized_columns = set()
+        self._applying_column_order = False
         # The user's column choice. Width tiers hide Type and Date on
         # screen without writing over this, so a narrow window is not saved.
         self._user_column_visibility = {k: True for k in self.COLUMN_VISIBILITY_KEYS}
@@ -1734,6 +1795,9 @@ class FilePanel(QWidget):
         self._overflow_thumb_guard = False
         self._filter_options_has_icon = False
         self._thumb_icon_set = False
+        self._square_nav_buttons = []
+        self._focus_after_load = None
+        self._cursor_placed = True
         self._viewport_layout_timer = QTimer(self)
         self._viewport_layout_timer.setSingleShot(True)
         self._viewport_layout_timer.setInterval(50)
@@ -1769,6 +1833,35 @@ class FilePanel(QWidget):
         self._updateFrameStyle()
 
     # --------------------------------------------------------
+    # Method: _navControlSize
+    # Purpose: Width, height, and icon size for one square
+    #          navigation button, from the current UI metrics.
+    # --------------------------------------------------------
+    def _navControlSize(self):
+        metrics = getattr(self, "_ui_metrics", None) or {}
+        width = int(metrics.get("nav_button_width", 28))
+        height = int(metrics.get("nav_bar_height", 24))
+        icon = int(metrics.get("nav_icon_size", 16))
+        return width, height, icon
+
+    # --------------------------------------------------------
+    # Method: _makeSquareButton
+    # Purpose: A navigation button sized from the metrics, so
+    #          the row does not mix hard-coded pixel sizes.
+    # --------------------------------------------------------
+    def _makeSquareButton(self, object_name, tooltip):
+        button = QPushButton()
+        button.setObjectName(object_name)
+        button.setToolTip(tooltip)
+        button.setAutoDefault(False)
+        button.setDefault(False)
+        width, height, icon = self._navControlSize()
+        button.setFixedSize(width, height)
+        button.setIconSize(QSize(icon, icon))
+        self._square_nav_buttons.append(button)
+        return button
+
+    # --------------------------------------------------------
     # Method: _initUI
     # Purpose: Builds and lays out all child widgets.
     # --------------------------------------------------------
@@ -1796,15 +1889,10 @@ class FilePanel(QWidget):
             "to navigate. Use the copy/paste buttons to work with the clipboard."
         )
 
-        self._btn_copy_path = QPushButton()
-        self._btn_copy_path.setObjectName("navButton")
-        self._btn_copy_path.setFixedSize(30, NAV_BAR_HEIGHT)
-        self._btn_copy_path.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-        self._btn_copy_path.setToolTip(
-            "Copy path\n\nCopy the current folder path to the clipboard."
+        self._btn_copy_path = self._makeSquareButton(
+            "navButton",
+            "Copy path\n\nCopy the current folder path to the clipboard.",
         )
-        self._btn_copy_path.setAutoDefault(False)
-        self._btn_copy_path.setDefault(False)
         copy_icon = QIcon.fromTheme("edit-copy")
         if copy_icon.isNull():
             copy_icon = QIcon.fromTheme("document-copy")
@@ -1814,15 +1902,10 @@ class FilePanel(QWidget):
             self._btn_copy_path.setIcon(copy_icon)
         self._btn_copy_path.clicked.connect(self._copyPathToClipboard)
 
-        self._btn_paste_path = QPushButton()
-        self._btn_paste_path.setObjectName("navButton")
-        self._btn_paste_path.setFixedSize(30, NAV_BAR_HEIGHT)
-        self._btn_paste_path.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-        self._btn_paste_path.setToolTip(
-            "Paste path\n\nPaste a path from the clipboard and navigate to that folder if it exists."
+        self._btn_paste_path = self._makeSquareButton(
+            "navButton",
+            "Paste path\n\nPaste a path from the clipboard and navigate to that folder if it exists.",
         )
-        self._btn_paste_path.setAutoDefault(False)
-        self._btn_paste_path.setDefault(False)
         paste_icon = QIcon.fromTheme("edit-paste")
         if paste_icon.isNull():
             paste_icon = QIcon.fromTheme("document-paste")
@@ -1832,16 +1915,11 @@ class FilePanel(QWidget):
             self._btn_paste_path.setIcon(paste_icon)
         self._btn_paste_path.clicked.connect(self._pastePathAndNavigate)
 
-        self._btn_browse_folder = QPushButton()
-        self._btn_browse_folder.setObjectName("navButton")
-        self._btn_browse_folder.setFixedSize(30, NAV_BAR_HEIGHT)
-        self._btn_browse_folder.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-        self._btn_browse_folder.setToolTip(
+        self._btn_browse_folder = self._makeSquareButton(
+            "navButton",
             "Open in Explorer\n\nOpen this folder in the operating system's file manager "
-            "(Windows Explorer, Finder, etc.)."
+            "(Windows Explorer, Finder, etc.).",
         )
-        self._btn_browse_folder.setAutoDefault(False)
-        self._btn_browse_folder.setDefault(False)
         self._btn_browse_folder.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
         self._btn_browse_folder.clicked.connect(self._openCurrentFolderInSystemExplorer)
 
@@ -1861,13 +1939,7 @@ class FilePanel(QWidget):
         nav_layout.setSpacing(4)
 
         for btn_attr in ("_btn_back", "_btn_forward", "_btn_up", "_btn_home"):
-            btn = QPushButton()
-            btn.setObjectName("navButton")
-            btn.setFixedSize(30, NAV_BAR_HEIGHT)
-            btn.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-            btn.setAutoDefault(False)
-            btn.setDefault(False)
-            setattr(self, btn_attr, btn)
+            setattr(self, btn_attr, self._makeSquareButton("navButton", ""))
         self._btn_back.setToolTip(
             "Back\n\nGo to the previous folder in this panel's history. Shortcut: Alt+Left."
         )
@@ -1888,6 +1960,14 @@ class FilePanel(QWidget):
         self._btn_home.setText("\U0001F3E0")
         self._btn_home.clicked.connect(self._goHome)
 
+        self._btn_favorite = self._makeSquareButton(
+            "navButton",
+            "Favorite\n\n"
+            "Save this folder as a bookmark. Shortcut: Ctrl+Shift+B.",
+        )
+        self._btn_favorite.setText("\u2605")
+        self._btn_favorite.clicked.connect(self.favoriteRequested.emit)
+
         self._drive_entries = []
         self._drive_combo = DrivePickerCombo(on_before_popup=self._refreshDrives)
         self._drive_combo.setObjectName("driveCombo")
@@ -1901,7 +1981,7 @@ class FilePanel(QWidget):
         self._drive_combo.setEditable(True)
         drive_line_edit = DriveLineEdit(self._drive_combo, self._drive_combo)
         drive_line_edit.setReadOnly(True)
-        drive_line_edit.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
+        drive_line_edit.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         drive_line_edit.setFrame(False)
         self._drive_combo.setLineEdit(drive_line_edit)
         self._drive_line_edit = drive_line_edit
@@ -1954,7 +2034,7 @@ class FilePanel(QWidget):
         self._btn_clear_filter.clicked.connect(self.clearFilter)
         self._btn_clear_filter.setVisible(False)
 
-        self._btn_filter_options = QPushButton("\u2699 Settings")
+        self._btn_filter_options = QPushButton("Filter settings")
         self._btn_filter_options.setObjectName("filterSettingsButton")
         self._btn_filter_options.setFixedHeight(NAV_BAR_HEIGHT)
         self._btn_filter_options.setAutoDefault(False)
@@ -1973,7 +2053,7 @@ class FilePanel(QWidget):
             self._filter_options_has_icon = True
             self._btn_filter_options.setIcon(filter_opts_icon)
             self._btn_filter_options.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-            self._btn_filter_options.setText("Settings")
+            self._btn_filter_options.setText("Filter settings")
 
         self._btn_thumbnails = QPushButton("Thumbnails")
         self._btn_thumbnails.setObjectName("thumbnailButton")
@@ -2002,7 +2082,9 @@ class FilePanel(QWidget):
         self._btn_overflow.setPopupMode(QToolButton.InstantPopup)
         self._btn_overflow.setAutoRaise(False)
         self._btn_overflow.setFocusPolicy(Qt.NoFocus)
-        self._btn_overflow.setFixedSize(30, NAV_BAR_HEIGHT)
+        overflow_w, overflow_h, _overflow_icon = self._navControlSize()
+        self._btn_overflow.setFixedSize(overflow_w, overflow_h)
+        self._square_nav_buttons.append(self._btn_overflow)
         self._btn_overflow.setToolTip(
             "More\n\n"
             "Navigation, drives, and path actions that do not fit on this row."
@@ -2012,6 +2094,10 @@ class FilePanel(QWidget):
         self._act_overflow_forward.triggered.connect(lambda checked: self.goForward())
         self._act_overflow_home = self._overflow_menu.addAction("Home")
         self._act_overflow_home.triggered.connect(lambda checked: self._goHome())
+        self._act_overflow_favorite = self._overflow_menu.addAction("Favorite")
+        self._act_overflow_favorite.triggered.connect(
+            lambda checked: self.favoriteRequested.emit()
+        )
         self._act_overflow_new_folder = self._overflow_menu.addAction("New folder")
         self._act_overflow_new_folder.triggered.connect(
             lambda checked: self.createNewFolder()
@@ -2038,17 +2124,12 @@ class FilePanel(QWidget):
         self._btn_overflow.setMenu(self._overflow_menu)
         self._btn_overflow.setVisible(False)
 
-        self._btn_new_folder = QPushButton()
-        self._btn_new_folder.setObjectName("navButton")
-        self._btn_new_folder.setFixedSize(30, NAV_BAR_HEIGHT)
-        self._btn_new_folder.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
-        self._btn_new_folder.setToolTip(
+        self._btn_new_folder = self._makeSquareButton(
+            "navButton",
             "New folder\n\n"
             "Create a new subfolder in the folder shown in this panel. "
-            "Shortcut: F8 when this panel is active."
+            "Shortcut: F8 when this panel is active.",
         )
-        self._btn_new_folder.setAutoDefault(False)
-        self._btn_new_folder.setDefault(False)
         new_folder_icon = QIcon.fromTheme("folder-new")
         if new_folder_icon.isNull():
             new_folder_icon = style.standardIcon(QStyle.SP_FileDialogNewFolder)
@@ -2061,6 +2142,7 @@ class FilePanel(QWidget):
         nav_layout.addWidget(self._btn_forward)
         nav_layout.addWidget(self._btn_up)
         nav_layout.addWidget(self._btn_home)
+        nav_layout.addWidget(self._btn_favorite)
         nav_layout.addWidget(self._btn_new_folder)
         nav_layout.addWidget(self._drive_container)
         nav_layout.addWidget(self._filter_edit, 1)
@@ -2135,6 +2217,36 @@ class FilePanel(QWidget):
             self.applyUiMetrics(getUiMetrics(fs, sc))
 
     # --------------------------------------------------------
+    # Method: applyActionIcons
+    # Purpose: Navigation buttons use the action-icon set
+    #          chosen in Settings.
+    # --------------------------------------------------------
+    def applyActionIcons(self):
+        from action_icons import iconForAction
+
+        mapping = (
+            (self._btn_back, "back", True),
+            (self._btn_forward, "forward", True),
+            (self._btn_up, "up", True),
+            (self._btn_home, "home", True),
+            (self._btn_favorite, "bookmark", True),
+            (self._btn_new_folder, "new_folder", True),
+            (self._btn_copy_path, "copy_path", True),
+            (self._btn_paste_path, "paste_path", True),
+            (self._btn_browse_folder, "reveal", True),
+            (self._btn_filter_options, "filter_settings", False),
+            (self._btn_thumbnails, "thumbnails", False),
+            (self._btn_clear_filter, "clear", False),
+        )
+        for button, action_id, icon_only in mapping:
+            icon = iconForAction(action_id)
+            if icon.isNull():
+                continue
+            button.setIcon(icon)
+            if icon_only:
+                button.setText("")
+
+    # --------------------------------------------------------
     # Method: applyUiMetrics
     # Purpose: Apply row height and nav bar sizes from Settings density.
     # --------------------------------------------------------
@@ -2147,16 +2259,7 @@ class FilePanel(QWidget):
         btn_w = metrics.get("nav_button_width", 30)
 
         self._path_edit.setMinimumHeight(max(h, metrics.get("path_edit_height", h)))
-        for btn in (
-            self._btn_copy_path,
-            self._btn_paste_path,
-            self._btn_browse_folder,
-            self._btn_back,
-            self._btn_forward,
-            self._btn_up,
-            self._btn_home,
-            self._btn_new_folder,
-        ):
+        for btn in self._square_nav_buttons:
             btn.setFixedSize(btn_w, h)
             btn.setIconSize(icon_sz)
         self._btn_clear_filter.setFixedHeight(h)
@@ -2169,8 +2272,7 @@ class FilePanel(QWidget):
         self._drive_arrow.setFixedSize(arrow_w, h)
         self._drive_container.setFixedSize(metrics["drive_combo_width"] + arrow_w, h)
         self._filter_edit.setFixedHeight(h)
-        if getattr(self, "_drive_line_edit", None) is not None:
-            self._drive_line_edit.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
+        self._showDriveTextFromStart()
         self._filter_edit.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
         self._btn_overflow.setFixedSize(btn_w, h)
@@ -2253,12 +2355,10 @@ class FilePanel(QWidget):
         self._syncDriveContainerVisibility()
         self._btn_clear_filter.setText("\u2715 Clear" if wide else "\u2715")
         if wide:
-            self._btn_filter_options.setText("Settings")
+            self._btn_filter_options.setText("Filter settings")
             self._btn_thumbnails.setText("Thumbnails")
         else:
-            self._btn_filter_options.setText(
-                "" if self._filter_options_has_icon else "\u2699"
-            )
+            self._btn_filter_options.setText("Filter")
             self._btn_thumbnails.setText("" if self._thumb_icon_set else "Img")
         floor = FILTER_MIN_WIDTH_WIDE if wide else FILTER_MIN_WIDTH_COMPACT
         scale = float(getattr(self, "_layout_scale", 1.0) or 1.0)
@@ -2448,6 +2548,83 @@ class FilePanel(QWidget):
             return keys[logical_index]
         return None
 
+    # --------------------------------------------------------
+    # Method: columnOrder
+    # Purpose: Visual order of the column keys. Logical columns
+    #          stay Name, Size, Type, Date, so a drag only
+    #          changes where each one is drawn.
+    # --------------------------------------------------------
+    def columnOrder(self):
+        header = self._table.horizontalHeader()
+        count = self._source_model.columnCount()
+        order = []
+        for visual in range(count):
+            key = self._columnKeyAt(header.logicalIndex(visual))
+            if key:
+                order.append(key)
+        return order
+
+    # --------------------------------------------------------
+    # Method: _sanitizeColumnOrder
+    # Purpose: A full permutation of the four columns, or None
+    #          when the saved list is missing or broken.
+    # --------------------------------------------------------
+    def _sanitizeColumnOrder(self, order):
+        keys = list(self.COLUMN_VISIBILITY_KEYS)
+        if not isinstance(order, list) or len(order) != len(keys):
+            return None
+        cleaned = []
+        for item in order:
+            if not isinstance(item, str) or item not in keys or item in cleaned:
+                return None
+            cleaned.append(item)
+        if len(cleaned) != len(keys):
+            return None
+        return cleaned
+
+    # --------------------------------------------------------
+    # Method: applyColumnOrder
+    # Purpose: Put the columns in the saved visual order.
+    #          Header signals stay blocked so this is not
+    #          saved again as a user drag.
+    # --------------------------------------------------------
+    def applyColumnOrder(self, order):
+        cleaned = self._sanitizeColumnOrder(order)
+        if not cleaned:
+            return
+        header = self._table.horizontalHeader()
+        keys = self.COLUMN_VISIBILITY_KEYS
+        self._applying_column_order = True
+        self._column_width_clamping = True
+        try:
+            header.blockSignals(True)
+            for visual, key in enumerate(cleaned):
+                logical = keys.index(key)
+                current = header.visualIndex(logical)
+                if current != visual:
+                    header.moveSection(current, visual)
+        finally:
+            header.blockSignals(False)
+            self._column_width_clamping = False
+            self._applying_column_order = False
+
+    # --------------------------------------------------------
+    # Method: resetColumnOrder
+    # Purpose: Name, Size, Type, Date Modified, then save it.
+    # --------------------------------------------------------
+    def resetColumnOrder(self):
+        self.applyColumnOrder(list(self.COLUMN_VISIBILITY_KEYS))
+        self._column_width_save_timer.start()
+
+    # --------------------------------------------------------
+    # Method: _onColumnSectionMoved
+    # Purpose: A real header drag is remembered with the panel.
+    # --------------------------------------------------------
+    def _onColumnSectionMoved(self, _logical, _old_visual, _new_visual):
+        if self._applying_column_order or self._column_width_clamping:
+            return
+        self._column_width_save_timer.start()
+
     @classmethod
     def _sanitizeColumnVisibility(cls, vis_dict):
         """Ensure the Name column stays visible; fix corrupt %APPDATA% state."""
@@ -2513,6 +2690,24 @@ class FilePanel(QWidget):
             elif k in self.COLUMN_VISIBILITY_KEYS:
                 self._column_width_locked[k] = False
 
+    # --------------------------------------------------------
+    # Method: _applyUserSizedState
+    # Purpose: Columns the user dragged keep that width
+    #          across a restart. Anything else is packed.
+    # --------------------------------------------------------
+    def _applyUserSizedState(self, data):
+        chosen = set()
+        if isinstance(data, dict):
+            items = [key for key, flag in data.items() if flag]
+        elif isinstance(data, (list, tuple)):
+            items = data
+        else:
+            items = []
+        for key in items:
+            if key in self.COLUMN_VISIBILITY_KEYS:
+                chosen.add(key)
+        self._user_sized_columns = chosen
+
     def _wouldLeaveNoUnlockedVisibleColumn(self, logical_index_being_locked):
         """
         True if every visible column except the one being locked is already locked,
@@ -2536,10 +2731,7 @@ class FilePanel(QWidget):
         self._viewport_layout_timer.start()
 
     def _onTableViewportResized(self):
-        if self._freeze_column_widths:
-            self._applyColumnMinimumWidthsOnly()
-        else:
-            self._scheduleFitColumnsToViewport()
+        self._scheduleFitColumnsToViewport()
 
     def _applyColumnMinimumWidthsOnly(self):
         """
@@ -2578,6 +2770,8 @@ class FilePanel(QWidget):
                 "column_widths": self.getColumnWidths(),
                 "column_width_locked": lock_state["column_width_locked"],
                 "locked_column_widths": lock_state["locked_column_widths"],
+                "column_user_sized": sorted(self._user_sized_columns),
+                "column_order": self.columnOrder(),
             }
         )
         self._settings_manager.setPanelState(self._panel_side, current)
@@ -2613,10 +2807,95 @@ class FilePanel(QWidget):
         else:
             self._fitColumnsToViewport()
 
+    # --------------------------------------------------------
+    # Method: _preferredWidthForColumn
+    # Purpose: How wide Size, Type, and Date need to be to show
+    #          their header and a wide sample. Name has no cap
+    #          and returns None so it can take the leftover.
+    # --------------------------------------------------------
+    def _preferredWidthForColumn(self, col):
+        key = self._columnKeyAt(col)
+        if key in (None, "name"):
+            return None
+        fm = self._table.fontMetrics()
+        pad = max(16, int(round(20 * getattr(self, "_layout_scale", 1.0))))
+        width = self._minWidthForColumn(col)
+        if key == "date_modified":
+            sample = format_date_modified(
+                1761950000,
+                self._source_model._date_modified_format_key,
+            )
+            return max(width, fm.horizontalAdvance(sample) + pad)
+        samples = {
+            "size": ("<DIR>", "9999.9 GB"),
+            "type": ("Folder", "JPEG File"),
+        }
+        for sample in samples.get(key, ()):
+            width = max(width, fm.horizontalAdvance(sample) + pad)
+        return width
+
+    # --------------------------------------------------------
+    # Method: _startingColumnWidth
+    # Purpose: Locked and hand-dragged columns keep their width.
+    #          Size, Type, and Date otherwise start at the
+    #          preferred width so an old wide Size column
+    #          does not leave a blank band.
+    # --------------------------------------------------------
+    def _startingColumnWidth(self, col, floor):
+        key = self._columnKeyAt(col)
+        if key and self._column_width_locked.get(key):
+            locked = self._locked_column_width_px.get(key)
+            if locked is not None:
+                return max(floor, int(locked))
+        if key and key in self._user_sized_columns:
+            return max(floor, self._table.columnWidth(col))
+        preferred = self._preferredWidthForColumn(col)
+        if preferred is None:
+            return max(floor, self._table.columnWidth(col))
+        return max(floor, preferred)
+
+    # --------------------------------------------------------
+    # Method: _columnsToShrink
+    # Purpose: Name gives up width first. Then the other
+    #          columns the user has not dragged or locked.
+    # --------------------------------------------------------
+    def _columnsToShrink(self, visible, flex, locked_set, widths, col_floor):
+        if (
+            0 in visible
+            and "name" not in self._user_sized_columns
+            and not self._column_width_locked.get("name")
+            and widths.get(0, 0) > col_floor(0)
+        ):
+            return [0]
+        pool = [
+            col
+            for col in flex
+            if self._columnKeyAt(col) not in self._user_sized_columns
+            and widths[col] > col_floor(col)
+        ]
+        if pool:
+            return pool
+        pool = [col for col in flex if widths[col] > col_floor(col)]
+        if pool:
+            return pool
+        pool = [col for col in locked_set if widths[col] > col_floor(col)]
+        if pool:
+            return pool
+        return [col for col in visible if widths[col] > 1]
+
+    # --------------------------------------------------------
+    # Method: _reflowColumnsToViewport
+    # Purpose: Pack Size, Type, and Date, and give the rest
+    #          of the pane to Name. Used after a resize and
+    #          after saved widths are restored.
+    # --------------------------------------------------------
+    def _reflowColumnsToViewport(self):
+        self._fitColumnsToViewport()
+
     def _fitColumnsToViewport(self):
         """
-        One-time / explicit layout: fit visible columns into the viewport width.
-        Not used after saved or user-set widths (_freeze_column_widths).
+        Fit visible columns into the viewport. Name takes the
+        leftover. Locked and hand-dragged columns keep their width.
         """
         if self._column_width_clamping:
             return
@@ -2646,13 +2925,7 @@ class FilePanel(QWidget):
 
         w = {}
         for c in visible:
-            floor = self._minWidthForColumn(c, vw)
-            w[c] = max(floor, self._table.columnWidth(c))
-        for c in locked_set:
-            k = keys[c]
-            px = self._locked_column_width_px.get(k)
-            if px is not None:
-                w[c] = max(col_floor(c), int(px))
+            w[c] = self._startingColumnWidth(c, col_floor(c))
 
         def total_width():
             return sum(w[c] for c in visible)
@@ -2697,11 +2970,7 @@ class FilePanel(QWidget):
                         w[last_flex] = max(col_floor(last_flex), w[last_flex] + drift)
 
             while total_width() > vw:
-                pool = [c for c in flex if w[c] > col_floor(c)]
-                if not pool:
-                    pool = [c for c in locked_set if w[c] > col_floor(c)]
-                if not pool:
-                    pool = [c for c in visible if w[c] > 1]
+                pool = self._columnsToShrink(visible, flex, locked_set, w, col_floor)
                 if not pool:
                     break
                 w[max(pool, key=lambda x: w[x])] -= 1
@@ -2711,11 +2980,13 @@ class FilePanel(QWidget):
             extra = vw - total
             date_col = self.COLUMN_VISIBILITY_KEYS.index("date_modified")
             if date_col in visible:
+                preferred = self._preferredWidthForColumn(date_col) or 0
                 date_cap = max(
+                    preferred,
                     self._minWidthForColumn(date_col, vw),
                     int(round(self.DATE_COLUMN_MAX_WIDTH * getattr(self, "_layout_scale", 1.0))),
                 )
-                if w[date_col] > date_cap:
+                if w[date_col] > date_cap and "date_modified" not in self._user_sized_columns:
                     extra += w[date_col] - date_cap
                     w[date_col] = date_cap
             if 0 in visible and extra > 0:
@@ -2788,36 +3059,40 @@ class FilePanel(QWidget):
             show = bool(user.get(key, True)) and key not in hidden_keys
             self._table.setColumnHidden(col, not show)
         if self._freeze_column_widths:
-            self._applyColumnMinimumWidthsOnly()
+            self._reflowColumnsToViewport()
         else:
             self._fitColumnsToViewport()
 
     def relayoutColumns(self):
-        """Initial viewport fit once, then only enforce column minimum widths."""
-        if self._freeze_column_widths:
-            self._applyColumnMinimumWidthsOnly()
-        else:
-            self._fitColumnsToViewport()
-            self._freeze_column_widths = True
+        """Pack Size, Type, and Date, and give the leftover width to Name."""
+        self._fitColumnsToViewport()
+        self._freeze_column_widths = True
 
     def applyColumnWidths(self, widths_dict):
-        """Apply saved column widths without shrinking to the viewport."""
+        """Apply saved column widths, then pack the pane."""
         widths_dict = self._sanitizeColumnWidths(widths_dict)
         if not widths_dict:
             return
         min_w = self.MIN_PERSISTED_COLUMN_WIDTH
-        for col, key in enumerate(self.COLUMN_WIDTH_KEYS):
-            if col >= self._source_model.columnCount():
-                break
-            w = widths_dict.get(key)
-            if (
-                w is not None
-                and isinstance(w, (int, float))
-                and int(w) >= min_w
-            ):
-                self._table.setColumnWidth(col, int(w))
+        header = self._table.horizontalHeader()
+        self._column_width_clamping = True
+        try:
+            header.blockSignals(True)
+            for col, key in enumerate(self.COLUMN_WIDTH_KEYS):
+                if col >= self._source_model.columnCount():
+                    break
+                w = widths_dict.get(key)
+                if (
+                    w is not None
+                    and isinstance(w, (int, float))
+                    and int(w) >= min_w
+                ):
+                    self._table.setColumnWidth(col, int(w))
+        finally:
+            header.blockSignals(False)
+            self._column_width_clamping = False
+        self._reflowColumnsToViewport()
         self._freeze_column_widths = True
-        self._applyColumnMinimumWidthsOnly()
 
     def getColumnWidths(self):
         """Return column widths for persistence (all visible logical columns)."""
@@ -2857,12 +3132,17 @@ class FilePanel(QWidget):
         self._source_model.listingFinished.connect(self._onListingFinished)
 
         self._table.viewportResized.connect(self._onTableViewportResized)
-        self._table.horizontalHeader().sectionResized.connect(self._onColumnSectionResized)
+        header = self._table.horizontalHeader()
+        header.sectionResized.connect(self._onColumnSectionResized)
+        header.sectionMoved.connect(self._onColumnSectionMoved)
         QTimer.singleShot(0, self.relayoutColumns)
 
-    def _onColumnSectionResized(self, _logical_index, _old_size, _new_size):
+    def _onColumnSectionResized(self, logical_index, _old_size, _new_size):
         if self._column_width_clamping:
             return
+        key = self._columnKeyAt(logical_index)
+        if key:
+            self._user_sized_columns.add(key)
         self._freeze_column_widths = True
         self._applyColumnMinimumWidthsOnly()
         self._column_width_save_timer.start()
@@ -2883,6 +3163,7 @@ class FilePanel(QWidget):
             self._btn_forward,
             self._btn_up,
             self._btn_home,
+            self._btn_favorite,
             self._btn_filter_options,
             self._btn_new_folder,
             self._drive_combo,
@@ -2909,10 +3190,68 @@ class FilePanel(QWidget):
             hbar.setValue(0)
 
     # --------------------------------------------------------
+    # Method: _placeCursorAfterLoad
+    # Purpose: Put the cursor on the folder we just left, or
+    #          on the first row when a folder opens with no
+    #          remembered child. A second call in the same
+    #          load does nothing, so a fast listing and the
+    #          caller cannot both move the cursor.
+    # --------------------------------------------------------
+    def _placeCursorAfterLoad(self):
+        if self._cursor_placed:
+            return
+        self._cursor_placed = True
+        proxy = self._proxy_model
+        count = proxy.rowCount()
+        if count <= 0:
+            return
+        row = self._rowForFocusPath(self._focus_after_load, count)
+        self._focus_after_load = None
+        index = proxy.index(row, 0)
+        self._table.setCurrentIndex(index)
+        selection = self._table.selectionModel()
+        if selection is not None:
+            selection.select(
+                index,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
+        self._table.scrollTo(index)
+
+    # --------------------------------------------------------
+    # Method: _rowForFocusPath
+    # Purpose: The visible row whose full path is `path`, or 0.
+    # --------------------------------------------------------
+    def _rowForFocusPath(self, path, count):
+        if not isinstance(path, str) or not path:
+            return 0
+        try:
+            target = os.path.normcase(os.path.normpath(path))
+        except (OSError, ValueError):
+            return 0
+        proxy = self._proxy_model
+        for row in range(count):
+            source_index = proxy.mapToSource(proxy.index(row, 0))
+            if not source_index.isValid():
+                continue
+            entry = self._source_model.entryAt(source_index.row())
+            if not entry:
+                continue
+            full = entry.get("full_path") or ""
+            try:
+                same = os.path.normcase(os.path.normpath(full)) == target
+            except (OSError, ValueError):
+                same = False
+            if same:
+                return row
+        return 0
+
+    # --------------------------------------------------------
     # Method: navigateTo
     # Purpose: Loads a directory and pushes it to the history.
+    #          focus_path, when set, is the row to highlight
+    #          after the listing (the folder just left).
     # --------------------------------------------------------
-    def navigateTo(self, path, add_to_history=True):
+    def navigateTo(self, path, add_to_history=True, focus_path=None):
         """Returns True when the folder or archive was opened."""
         from archive_backend import splitArchivePath
 
@@ -2933,6 +3272,8 @@ class FilePanel(QWidget):
         self._pending_reselect = None
         self._pending_scroll = None
         self._scroll_to_top_when_loaded = True
+        self._focus_after_load = focus_path if isinstance(focus_path, str) and focus_path else None
+        self._cursor_placed = False
         self._source_model.loadDirectory(path)
         self._path_edit.setText(path)
         self._updateNavButtons()
@@ -2943,7 +3284,9 @@ class FilePanel(QWidget):
         if self._source_model.isLoading():
             return True
         self._scroll_to_top_when_loaded = False
-        QTimer.singleShot(0, self._scrollFileTableToTop)
+        self._placeCursorAfterLoad()
+        if self._table.currentIndex().row() <= 0:
+            QTimer.singleShot(0, self._scrollFileTableToTop)
         return True
 
     # --------------------------------------------------------
@@ -3447,7 +3790,7 @@ class FilePanel(QWidget):
         if current:
             parent = os.path.dirname(current)
             if parent and parent != current:
-                self.navigateTo(parent)
+                self.navigateTo(parent, focus_path=current)
 
     # --------------------------------------------------------
     # Active State
@@ -3631,6 +3974,8 @@ class FilePanel(QWidget):
             "column_visibility": self.getColumnVisibility(),
             "column_width_locked": lock_state["column_width_locked"],
             "locked_column_widths": lock_state["locked_column_widths"],
+            "column_user_sized": sorted(self._user_sized_columns),
+            "column_order": self.columnOrder(),
             "filter_mode": self._proxy_model.filterMode(),
             "filter_kind": self._proxy_model.entryKindFilter(),
             "filter_text": self._filter_edit.text(),
@@ -3680,21 +4025,25 @@ class FilePanel(QWidget):
         if isNavigablePath(current):
             self._history_index = self._historyIndexFromState(data, current)
             self.navigateTo(current, add_to_history=False)
-        column_widths = self._sanitizeColumnWidths(data.get("column_widths"))
-        if column_widths:
-            self.applyColumnWidths(column_widths)
         self.applyColumnWidthLockState(
             {
                 "column_width_locked": data.get("column_width_locked"),
                 "locked_column_widths": data.get("locked_column_widths"),
             }
         )
+        self._applyUserSizedState(data.get("column_user_sized"))
+        column_widths = self._sanitizeColumnWidths(data.get("column_widths"))
+        if column_widths:
+            self.applyColumnWidths(column_widths)
         column_visibility = self._sanitizeColumnVisibility(data.get("column_visibility"))
         if column_visibility:
             self.applyColumnVisibility(column_visibility)
         else:
             self._fitColumnsToViewport()
             self._freeze_column_widths = True
+        order = self._sanitizeColumnOrder(data.get("column_order"))
+        if order:
+            self.applyColumnOrder(order)
         fm = data.get("filter_mode")
         if fm in ("contains", "wildcard", "regex"):
             self._proxy_model.setFilterMode(fm)
@@ -3743,6 +4092,7 @@ class FilePanel(QWidget):
             self._btn_forward,
             self._btn_up,
             self._btn_home,
+            self._btn_favorite,
             self._btn_filter_options,
             self._btn_new_folder,
             self._drive_combo,
@@ -3774,8 +4124,12 @@ class FilePanel(QWidget):
         if row_count == 0:
             return
         current = self._table.currentIndex()
-        row = current.row() if current.isValid() else 0
-        new_row = max(0, min(row_count - 1, row + direction))
+        if current.isValid():
+            new_row = max(0, min(row_count - 1, current.row() + direction))
+        elif direction < 0:
+            new_row = row_count - 1
+        else:
+            new_row = 0
         new_index = model.index(new_row, 0)
         self._table.setCurrentIndex(new_index)
         self._table.selectionModel().select(
@@ -3920,7 +4274,21 @@ class FilePanel(QWidget):
                 combo.blockSignals(True)
                 combo.setCurrentIndex(i)
                 combo.blockSignals(False)
+                self._showDriveTextFromStart()
                 break
+
+    # --------------------------------------------------------
+    # Method: _showDriveTextFromStart
+    # Purpose: A long drive name stays left-aligned, so the
+    #          beginning of the label stays on screen.
+    # --------------------------------------------------------
+    def _showDriveTextFromStart(self):
+        edit = getattr(self, "_drive_line_edit", None)
+        if edit is None:
+            return
+        edit.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        edit.setCursorPosition(0)
+        edit.deselect()
 
     def _goHome(self):
         """Navigate to the user's home directory (OS-dependent)."""
@@ -4012,6 +4380,13 @@ class FilePanel(QWidget):
         )
         act_even.triggered.connect(self._distributeColumnsEvenly)
         menu.addAction(act_even)
+        act_reset = QAction("Reset column order", menu)
+        act_reset.setToolTip(
+            "Reset column order\n\n"
+            "Put the columns back to Name, Size, Type, Date Modified."
+        )
+        act_reset.triggered.connect(self.resetColumnOrder)
+        menu.addAction(act_reset)
         menu.exec_(hdr.mapToGlobal(pos))
 
     def _applyColumnVisibilityToggle(self, col, visible, action):
@@ -4500,7 +4875,9 @@ class FilePanel(QWidget):
         self._restorePendingViewState()
         if self._scroll_to_top_when_loaded:
             self._scroll_to_top_when_loaded = False
-            QTimer.singleShot(0, self._scrollFileTableToTop)
+            self._placeCursorAfterLoad()
+            if self._table.currentIndex().row() <= 0:
+                QTimer.singleShot(0, self._scrollFileTableToTop)
         self._updateStatusLabel()
         self.listingFinished.emit()
 

@@ -82,14 +82,16 @@ class TestFilePanelResponsive(unittest.TestCase):
         self.assertFalse(self.panel._btn_home.isHidden())
         self.assertFalse(self.panel._btn_new_folder.isHidden())
         self.assertTrue(self.panel._btn_overflow.isHidden())
-        self.assertEqual(self.panel._btn_filter_options.text(), "Settings")
+        self.assertEqual(self.panel._btn_filter_options.text(), "Filter settings")
         self.assertEqual(self.panel._btn_thumbnails.text(), "Thumbnails")
+        self.assertTrue(self.panel._drive_line_edit.alignment() & Qt.AlignLeft)
+        self.assertFalse(self.panel._btn_favorite.isHidden())
 
     def test_compact_row_is_icon_only(self):
         self._setWidth(500)
         self.assertFalse(self.panel._btn_home.isHidden())
         self.assertTrue(self.panel._btn_overflow.isHidden())
-        self.assertNotEqual(self.panel._btn_filter_options.text(), "Settings")
+        self.assertEqual(self.panel._btn_filter_options.text(), "Filter")
         self.assertNotEqual(self.panel._btn_thumbnails.text(), "Thumbnails")
 
     def test_narrow_row_moves_controls_into_the_overflow_menu(self):
@@ -102,9 +104,11 @@ class TestFilePanelResponsive(unittest.TestCase):
         self.assertTrue(self.panel._btn_copy_path.isHidden())
         self.assertFalse(self.panel._btn_back.isHidden())
         self.assertFalse(self.panel._btn_up.isHidden())
+        self.assertFalse(self.panel._btn_favorite.isHidden())
         self.assertFalse(self.panel._btn_overflow.isHidden())
         labels = [action.text() for action in self.panel._overflow_menu.actions()]
         self.assertIn("Home", labels)
+        self.assertIn("Favorite", labels)
         self.assertIn("New folder", labels)
         self.assertIn("Forward", labels)
         self.assertIn("Drives", labels)

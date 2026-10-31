@@ -5,13 +5,12 @@ right-click context menus, keyboard shortcuts, and bookmarks.
 """
 
 import os
-import shutil
 import subprocess
 import platform
 import uuid
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QSplitter, QToolBar, QAction, QStatusBar,
+    QMainWindow, QSplitter, QToolBar, QAction, QActionGroup, QStatusBar,
     QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget,
     QMenu, QMessageBox, QInputDialog, QApplication, QLabel,
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QFileDialog,
@@ -60,7 +59,6 @@ from archive_backend import (
 from compress_dialog import CompressDialog
 from panel_tabs import PanelTabBar, activeTabRecord
 from responsive_layout import (
-    CENTER_LABELS_HIDE_WIDTH,
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
     SIDEBAR_AUTO_COLLAPSE_WIDTH,
@@ -68,6 +66,7 @@ from responsive_layout import (
 )
 from settings_dialog import SettingsDialog
 from sidebar_rail import SidebarRail
+from terminal_launcher import openTerminalAt
 from theme import applyTheme, getUiMetrics, normalize_ui_scale, step_ui_scale, ui_scale_label
 from app_updater import (
     checkRemoteAppVersion,
@@ -85,6 +84,66 @@ from git_credentials_dialog import GitCredentialsDialog
 TRANSFER_SHUTDOWN_WAIT_MS = 10000
 UPDATE_CHECK_SHUTDOWN_WAIT_MS = 5000
 DRIVE_SPACE_SHUTDOWN_WAIT_MS = 500
+
+# Right-click the main toolbar. Text beside the icon keeps the
+# shortcut labels. Small matches the theme icon size; medium and
+# large scale that size and still follow font size and density.
+TOOLBAR_BUTTON_STYLES = {
+    "icon_only": Qt.ToolButtonIconOnly,
+    "text_beside": Qt.ToolButtonTextBesideIcon,
+    "text_under": Qt.ToolButtonTextUnderIcon,
+}
+TOOLBAR_ICON_SCALES = {
+    "small": 1.0,
+    "medium": 1.5,
+    "large": 2.0,
+}
+DEFAULT_TOOLBAR_BUTTON_STYLE = "text_beside"
+DEFAULT_TOOLBAR_ICON_SIZE = "small"
+TOOLBAR_STYLE_LABELS = (
+    ("icon_only", "Icons only"),
+    ("text_beside", "Icons and text"),
+    ("text_under", "Text under icons"),
+)
+TOOLBAR_SIZE_LABELS = (
+    ("small", "Small icons"),
+    ("medium", "Medium icons"),
+    ("large", "Large icons"),
+)
+
+
+# ------------------------------------------------------------
+# Function: normalizeToolbarButtonStyle
+# Purpose: A known toolbar style, or icons-and-text when the
+#          saved value is missing or misspelled.
+# ------------------------------------------------------------
+def normalizeToolbarButtonStyle(value):
+    text = str(value or "").strip().lower()
+    if text in TOOLBAR_BUTTON_STYLES:
+        return text
+    return DEFAULT_TOOLBAR_BUTTON_STYLE
+
+
+# ------------------------------------------------------------
+# Function: normalizeToolbarIconSize
+# Purpose: A known icon size, or small when the saved value
+#          is missing or misspelled.
+# ------------------------------------------------------------
+def normalizeToolbarIconSize(value):
+    text = str(value or "").strip().lower()
+    if text in TOOLBAR_ICON_SCALES:
+        return text
+    return DEFAULT_TOOLBAR_ICON_SIZE
+
+
+# ------------------------------------------------------------
+# Function: toolbarIconPixels
+# Purpose: Pixel size for the toolbar icons. `base` is the
+#          theme size. Large is twice that.
+# ------------------------------------------------------------
+def toolbarIconPixels(base, size_id):
+    scale = TOOLBAR_ICON_SCALES[normalizeToolbarIconSize(size_id)]
+    return max(14, int(round(int(base) * scale)))
 
 
 # ------------------------------------------------------------
@@ -679,7 +738,7 @@ class FileManagerApp(QMainWindow):
         self.addToolBar(self._toolbar)
         toolbar = self._toolbar
 
-        self._tb_copy = QAction("\U0001F4CB Copy (F6)", self)
+        self._tb_copy = QAction("Copy (F6)", self)
         self._tb_copy.setToolTip(
             "Copy to other panel\n\n"
             "Copy selected items to the opposite panel. Shortcut: F6."
@@ -687,7 +746,7 @@ class FileManagerApp(QMainWindow):
         self._tb_copy.triggered.connect(self._onCopyToOther)
         toolbar.addAction(self._tb_copy)
 
-        self._tb_move = QAction("\U0001F4E6 Move (F7)", self)
+        self._tb_move = QAction("Move (F7)", self)
         self._tb_move.setToolTip(
             "Move to other panel\n\n"
             "Move selected items to the opposite panel. Shortcut: F7."
@@ -695,7 +754,7 @@ class FileManagerApp(QMainWindow):
         self._tb_move.triggered.connect(self._onMoveToOther)
         toolbar.addAction(self._tb_move)
 
-        self._tb_delete = QAction("\U0001F5D1 Delete (F9)", self)
+        self._tb_delete = QAction("Delete (F9)", self)
         self._tb_delete.setToolTip(
             "Delete\n\nDelete selected items. Shortcut: F9."
         )
@@ -704,21 +763,21 @@ class FileManagerApp(QMainWindow):
 
         toolbar.addSeparator()
 
-        self._tb_new_folder = QAction("\U0001F4C1 New Folder (F8)", self)
+        self._tb_new_folder = QAction("New Folder (F8)", self)
         self._tb_new_folder.setToolTip(
             "New folder\n\nCreate a folder in the active panel. Shortcut: F8."
         )
         self._tb_new_folder.triggered.connect(self._onNewFolder)
         toolbar.addAction(self._tb_new_folder)
 
-        self._tb_rename = QAction("\u270F Rename (F2)", self)
+        self._tb_rename = QAction("Rename (F2)", self)
         self._tb_rename.setToolTip(
             "Rename\n\nRename the selected item. Shortcut: F2."
         )
         self._tb_rename.triggered.connect(self._onRename)
         toolbar.addAction(self._tb_rename)
 
-        self._tb_batch_rename = QAction("\U0001F504 Batch Rename", self)
+        self._tb_batch_rename = QAction("Batch Rename", self)
         self._tb_batch_rename.setToolTip(
             "Batch rename\n\n"
             "Rename multiple files in the current folder. Shortcut: Ctrl+M."
@@ -728,7 +787,7 @@ class FileManagerApp(QMainWindow):
 
         toolbar.addSeparator()
 
-        self._tb_bookmark = QAction("\u2B50 Bookmark", self)
+        self._tb_bookmark = QAction("Bookmark", self)
         self._tb_bookmark.setToolTip(
             "Bookmark folder\n\n"
             "Save the active panel’s path as a bookmark. Shortcut: Ctrl+Shift+B."
@@ -736,7 +795,7 @@ class FileManagerApp(QMainWindow):
         self._tb_bookmark.triggered.connect(self._onAddBookmark)
         toolbar.addAction(self._tb_bookmark)
 
-        self._tb_open_explorer = QAction("\U0001F4C2 Explorer", self)
+        self._tb_open_explorer = QAction("Explorer", self)
         self._tb_open_explorer.setToolTip(
             "Open in Explorer\n\n"
             "Open the active panel’s folder in the system file manager."
@@ -744,7 +803,7 @@ class FileManagerApp(QMainWindow):
         self._tb_open_explorer.triggered.connect(self._onOpenActivePathInExplorer)
         toolbar.addAction(self._tb_open_explorer)
 
-        self._tb_refresh = QAction("\U0001F504 Refresh", self)
+        self._tb_refresh = QAction("Refresh", self)
         self._tb_refresh.setToolTip(
             "Refresh both panels\n\n"
             "Reload both panels. F5 refreshes only the active panel."
@@ -754,10 +813,10 @@ class FileManagerApp(QMainWindow):
 
         toolbar.addSeparator()
 
-        self._tb_settings = QAction("\u2699 Settings", self)
+        self._tb_settings = QAction("Settings", self)
         self._tb_settings.setToolTip(
             "Settings\n\n"
-            "Theme, font size, interface density (Compact/Normal/Comfortable), and more. "
+            "Theme, icon set, font size, interface density (Compact/Normal/Comfortable), and more. "
             "Shortcut: Ctrl+,"
         )
         self._tb_settings.triggered.connect(self._onOpenSettings)
@@ -771,18 +830,112 @@ class FileManagerApp(QMainWindow):
         font_size = int(self._settings.getSetting("font_size", 10))
         ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
         metrics = getUiMetrics(font_size, ui_scale)
-        icon = metrics["toolbar_icon"]
-        if hasattr(self, "_toolbar"):
-            self._toolbar.setIconSize(QSize(icon, icon))
+        self._applyToolbarAppearance(metrics)
         if hasattr(self, "_bottom_bar"):
             self._bottom_bar.setFixedHeight(metrics["bottom_bar_height"])
         if hasattr(self, "_sidebar_rail"):
             self._sidebar_rail.applyUiMetrics(metrics)
             self._syncSidebarHostSize()
         self._applyCenterStripMode()
+        self._applyTabAddButtons()
         self._applyBottomBarLabels()
         self._left_panel.applyUiMetrics(metrics)
         self._right_panel.applyUiMetrics(metrics)
+
+    # --------------------------------------------------------
+    # Method: _applyToolbarAppearance
+    # Purpose: Icon size and whether the toolbar shows text.
+    #          The center strip and panel buttons keep their own style.
+    # --------------------------------------------------------
+    def _applyToolbarAppearance(self, metrics=None):
+        if not hasattr(self, "_toolbar"):
+            return
+        if metrics is None:
+            font_size = int(self._settings.getSetting("font_size", 10))
+            ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
+            metrics = getUiMetrics(font_size, ui_scale)
+        size_id = normalizeToolbarIconSize(
+            self._settings.getSetting("toolbar_icon_size", DEFAULT_TOOLBAR_ICON_SIZE)
+        )
+        pixels = toolbarIconPixels(metrics["toolbar_icon"], size_id)
+        self._toolbar.setIconSize(QSize(pixels, pixels))
+        style_id = normalizeToolbarButtonStyle(
+            self._settings.getSetting("toolbar_button_style", DEFAULT_TOOLBAR_BUTTON_STYLE)
+        )
+        self._toolbar.setToolButtonStyle(TOOLBAR_BUTTON_STYLES[style_id])
+
+    # --------------------------------------------------------
+    # Method: createPopupMenu
+    # Purpose: The toolbar right-click menu. The window still
+    #          lists the toolbar itself, then icon size and
+    #          whether the buttons show text.
+    # --------------------------------------------------------
+    def createPopupMenu(self):
+        menu = super().createPopupMenu()
+        if menu is None:
+            menu = QMenu(self)
+        self._addToolbarAppearanceMenu(menu)
+        return menu
+
+    # --------------------------------------------------------
+    # Method: _addToolbarAppearanceMenu
+    # Purpose: Checkable choices for the main toolbar. The
+    #          current choice is the one that is checked.
+    # --------------------------------------------------------
+    def _addToolbarAppearanceMenu(self, menu):
+        menu.addSeparator()
+        style = normalizeToolbarButtonStyle(
+            self._settings.getSetting("toolbar_button_style", DEFAULT_TOOLBAR_BUTTON_STYLE)
+        )
+        size = normalizeToolbarIconSize(
+            self._settings.getSetting("toolbar_icon_size", DEFAULT_TOOLBAR_ICON_SIZE)
+        )
+        style_group = QActionGroup(menu)
+        style_group.setExclusive(True)
+        for key, label in TOOLBAR_STYLE_LABELS:
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setChecked(key == style)
+            style_group.addAction(action)
+            action.triggered.connect(
+                lambda checked, chosen=key: self._setToolbarButtonStyle(chosen) if checked else None
+            )
+            menu.addAction(action)
+        menu.addSeparator()
+        size_group = QActionGroup(menu)
+        size_group.setExclusive(True)
+        for key, label in TOOLBAR_SIZE_LABELS:
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setChecked(key == size)
+            size_group.addAction(action)
+            action.triggered.connect(
+                lambda checked, chosen=key: self._setToolbarIconSize(chosen) if checked else None
+            )
+            menu.addAction(action)
+
+    # --------------------------------------------------------
+    # Method: _setToolbarButtonStyle
+    # Purpose: Save icons-only, icons-and-text, or text-under
+    #          and apply it immediately.
+    # --------------------------------------------------------
+    def _setToolbarButtonStyle(self, style):
+        self._settings.setSetting(
+            "toolbar_button_style", normalizeToolbarButtonStyle(style)
+        )
+        self._settings.saveSettings()
+        self._applyToolbarAppearance()
+
+    # --------------------------------------------------------
+    # Method: _setToolbarIconSize
+    # Purpose: Save small, medium, or large and apply it immediately.
+    # --------------------------------------------------------
+    def _setToolbarIconSize(self, size):
+        self._settings.setSetting(
+            "toolbar_icon_size", normalizeToolbarIconSize(size)
+        )
+        self._settings.saveSettings()
+        self._applyToolbarAppearance()
 
     # --------------------------------------------------------
     # Method: _layoutScale
@@ -796,9 +949,8 @@ class FileManagerApp(QMainWindow):
 
     # --------------------------------------------------------
     # Method: _applyCenterStripMode
-    # Purpose: Size the middle column from the widest label so
-    #          SPECIAL and MIRROR are not clipped. A narrow
-    #          window hides the labels and keeps the buttons.
+    # Purpose: The middle column is only as wide as the square
+    #          buttons. Names stay in the tooltips.
     # --------------------------------------------------------
     def _applyCenterStripMode(self):
         if not hasattr(self, "_center_buttons"):
@@ -806,15 +958,11 @@ class FileManagerApp(QMainWindow):
         font_size = int(self._settings.getSetting("font_size", 10))
         ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
         metrics = getUiMetrics(font_size, ui_scale)
-        hide_below = scaled(CENTER_LABELS_HIDE_WIDTH, metrics.get("layout_scale", 1.0))
-        show_labels = self.width() <= 1 or self.width() >= hide_below
-        for label in self._center_labels:
-            label.setVisible(show_labels)
-        width = metrics["center_panel_width"]
-        if show_labels:
-            for label in self._center_labels:
-                text_width = label.fontMetrics().horizontalAdvance(label.text())
-                width = max(width, text_width + 16)
+        self._applyCenterButtonSize(metrics)
+        width = max(
+            metrics["center_panel_width"],
+            metrics["center_button_size"] + 8,
+        )
         self._center_buttons.setFixedWidth(width)
 
     # --------------------------------------------------------
@@ -835,20 +983,27 @@ class FileManagerApp(QMainWindow):
 
     # --------------------------------------------------------
     # Method: _bottomLabelsFit
-    # Purpose: True when every full F-key label fits the window.
+    # Purpose: True when the widest full F-key label fits one
+    #          equal slot of the bottom bar.
     # --------------------------------------------------------
     def _bottomLabelsFit(self, texts):
-        available = self.width() - 24
+        count = len(texts)
+        if count <= 0:
+            return True
+        available = self._bottom_bar.width() if hasattr(self, "_bottom_bar") else 0
+        if available <= 1:
+            available = self.width() - 24
         if available <= 1:
             return True
         font_size = int(self._settings.getSetting("font_size", 10))
         ui_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
         metrics = getUiMetrics(font_size, ui_scale)
-        pad = metrics["bottom_btn_pad_h"] * 2 + 18
-        spacing = 4 * max(0, len(texts) - 1)
-        fm = self._bottom_bar.fontMetrics()
-        total = sum(fm.horizontalAdvance(text) + pad for text in texts) + spacing
-        return total <= available
+        margins = 12
+        spacing = 4 * (count - 1)
+        slot = (available - margins - spacing) / count
+        pad = metrics["bottom_btn_pad_h"] * 2 + 8
+        widest = max(self._bottom_bar.fontMetrics().horizontalAdvance(text) for text in texts)
+        return widest + pad <= slot
 
     # --------------------------------------------------------
     # Method: _windowIsNarrowForSidebar
@@ -1097,6 +1252,10 @@ class FileManagerApp(QMainWindow):
         self._right_tabs.newTabRequested.connect(
             lambda: self._onNewTabFor("right")
         )
+        self._left_tabs.openInExplorerRequested.connect(self._openFolderInExplorer)
+        self._right_tabs.openInExplorerRequested.connect(self._openFolderInExplorer)
+        self._left_tabs.openInTerminalRequested.connect(self._openFolderInTerminal)
+        self._right_tabs.openInTerminalRequested.connect(self._openFolderInTerminal)
         self._left_panel.setStateSnapshot(lambda: self._savePanelTabs("left"))
         self._right_panel.setStateSnapshot(lambda: self._savePanelTabs("right"))
 
@@ -1215,6 +1374,12 @@ class FileManagerApp(QMainWindow):
 
         self._left_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
         self._right_panel.dateModifiedFormatChanged.connect(self._onDateModifiedFormatChanged)
+        self._left_panel.favoriteRequested.connect(
+            lambda: self._onAddBookmark(self._left_panel)
+        )
+        self._right_panel.favoriteRequested.connect(
+            lambda: self._onAddBookmark(self._right_panel)
+        )
 
         self._left_panel.tableView().setContextMenuPolicy(Qt.CustomContextMenu)
         self._left_panel.tableView().customContextMenuRequested.connect(
@@ -1260,6 +1425,7 @@ class FileManagerApp(QMainWindow):
         add_button.setAutoRaise(True)
         add_button.setFocusPolicy(Qt.NoFocus)
         add_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        add_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         add_button.clicked.connect(
             lambda checked, panel_side=side: self._onNewTabFor(panel_side)
         )
@@ -1272,6 +1438,24 @@ class FileManagerApp(QMainWindow):
         layout.addWidget(tab_row)
         layout.addWidget(stack, 1)
         return host
+
+    # --------------------------------------------------------
+    # Method: _applyTabAddButtons
+    # Purpose: The "+" matches the tab height and is square, so
+    #          it lines up with the folder tabs beside it.
+    # --------------------------------------------------------
+    def _applyTabAddButtons(self):
+        pairs = (
+            (getattr(self, "_left_tabs", None), getattr(self, "_left_tab_add", None)),
+            (getattr(self, "_right_tabs", None), getattr(self, "_right_tab_add", None)),
+        )
+        for tabs, button in pairs:
+            if tabs is None or button is None or tabs.count() < 1:
+                continue
+            height = tabs.tabSizeHint(0).height()
+            if height < 16:
+                height = max(16, tabs.sizeHint().height())
+            button.setFixedSize(height, height)
 
     def _showFilePanel(self, side):
         if side == "left":
@@ -1295,55 +1479,76 @@ class FileManagerApp(QMainWindow):
     #          copy/move buttons that sits between the panels.
     #          Arrows update dynamically based on active panel.
     # --------------------------------------------------------
+    # --------------------------------------------------------
+    # Method: _makeCenterButton
+    # Purpose: One square button for the strip between the
+    #          panels. Every action uses this, so Copy, Move,
+    #          Special, Swap, and Mirror stay the same size.
+    # --------------------------------------------------------
+    def _makeCenterButton(self, tooltip):
+        button = QToolButton()
+        button.setObjectName("centerActionButton")
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setAutoRaise(False)
+        button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        button.setToolTip(tooltip)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        return button
+
+    # --------------------------------------------------------
+    # Method: _addCenterGroup
+    # Purpose: One square button, then a small gap before the
+    #          next action. The name is the tooltip.
+    # --------------------------------------------------------
+    def _addCenterGroup(self, layout, button):
+        layout.addWidget(button, 0, Qt.AlignHCenter)
+        layout.addSpacing(8)
+
+    # --------------------------------------------------------
+    # Method: _applyCenterButtonSize
+    # Purpose: Keep every center button the metric square, so
+    #          font size and density change them together.
+    # --------------------------------------------------------
+    def _applyCenterButtonSize(self, metrics):
+        buttons = getattr(self, "_center_action_buttons", None)
+        if not buttons or not metrics:
+            return
+        size = int(metrics["center_button_size"])
+        icon = max(16, size - 8)
+        for button in buttons:
+            button.setFixedSize(size, size)
+            button.setIconSize(QSize(icon, icon))
+
     def _buildCenterButtons(self):
         frame = QFrame()
         frame.setObjectName("centerPanel")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(2, 4, 2, 4)
-        layout.setSpacing(4)
+        layout.setSpacing(2)
 
         layout.addStretch(1)
 
-        self._btn_copy_dir = QPushButton()
-        self._btn_copy_dir.setToolTip(
+        self._btn_copy_dir = self._makeCenterButton(
             "Copy to other panel\n\n"
             "Copy selected items from the active panel to the opposite panel. Shortcut: F6."
         )
-        self._btn_copy_dir.setFocusPolicy(Qt.NoFocus)
         self._btn_copy_dir.clicked.connect(self._onCopyToOther)
-        layout.addWidget(self._btn_copy_dir)
+        self._addCenterGroup(layout, self._btn_copy_dir)
 
-        self._lbl_copy = QLabel("COPY")
-        self._lbl_copy.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._lbl_copy)
-
-        layout.addSpacing(6)
-
-        self._btn_move_dir = QPushButton()
-        self._btn_move_dir.setToolTip(
+        self._btn_move_dir = self._makeCenterButton(
             "Move to other panel\n\n"
             "Move selected items from the active panel to the opposite panel. Shortcut: F7."
         )
-        self._btn_move_dir.setFocusPolicy(Qt.NoFocus)
         self._btn_move_dir.clicked.connect(self._onMoveToOther)
-        layout.addWidget(self._btn_move_dir)
+        self._addCenterGroup(layout, self._btn_move_dir)
 
-        self._lbl_move = QLabel("MOVE")
-        self._lbl_move.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._lbl_move)
-
-        layout.addSpacing(8)
-
-        self._btn_special = QToolButton()
-        self._btn_special.setObjectName("centerSpecialButton")
-        self._btn_special.setPopupMode(QToolButton.InstantPopup)
-        self._btn_special.setFocusPolicy(Qt.NoFocus)
-        self._btn_special.setToolTip(
+        self._btn_special = self._makeCenterButton(
             "Special transfers\n\n"
             "Copy or move while keeping folder structure relative to the "
             "active panel’s current folder (search root). Also copy relative "
             "or full paths to the clipboard."
         )
+        self._btn_special.setPopupMode(QToolButton.InstantPopup)
         special_menu = QMenu(self._btn_special)
         act_copy_struct = special_menu.addAction("Copy keeping structure")
         act_copy_struct.setToolTip(
@@ -1374,44 +1579,27 @@ class FileManagerApp(QMainWindow):
         )
         act_compare.triggered.connect(lambda: self._onCompareWithOtherPanel())
         self._btn_special.setMenu(special_menu)
-        layout.addWidget(self._btn_special)
+        self._addCenterGroup(layout, self._btn_special)
 
-        self._lbl_special = QLabel("SPECIAL")
-        self._lbl_special.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._lbl_special)
-
-        layout.addSpacing(8)
-
-        self._btn_swap = QPushButton("\u21C4")
-        self._btn_swap.setToolTip(
+        self._btn_swap = self._makeCenterButton(
             "Swap panes\n\n"
             "Exchange the left and right folder paths. Shortcut: Ctrl+Shift+S."
         )
-        self._btn_swap.setFocusPolicy(Qt.NoFocus)
+        self._btn_swap.setText("\u21C4")
         self._btn_swap.clicked.connect(self._onSwapPanels)
-        layout.addWidget(self._btn_swap)
+        self._addCenterGroup(layout, self._btn_swap)
 
-        self._lbl_swap = QLabel("SWAP")
-        self._lbl_swap.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._lbl_swap)
-
-        layout.addSpacing(8)
-
-        self._btn_mirror = QPushButton("\u229C")
-        self._btn_mirror.setFocusPolicy(Qt.NoFocus)
+        self._btn_mirror = self._makeCenterButton("")
+        self._btn_mirror.setText("\u21C9")
         self._btn_mirror.clicked.connect(self._onMirrorToOther)
-        layout.addWidget(self._btn_mirror)
+        self._addCenterGroup(layout, self._btn_mirror)
 
-        self._lbl_mirror = QLabel("MIRROR")
-        self._lbl_mirror.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._lbl_mirror)
-
-        self._center_labels = (
-            self._lbl_copy,
-            self._lbl_move,
-            self._lbl_special,
-            self._lbl_swap,
-            self._lbl_mirror,
+        self._center_action_buttons = (
+            self._btn_copy_dir,
+            self._btn_move_dir,
+            self._btn_special,
+            self._btn_swap,
+            self._btn_mirror,
         )
 
         layout.addStretch(1)
@@ -1426,15 +1614,15 @@ class FileManagerApp(QMainWindow):
     # --------------------------------------------------------
     def _updateDirectionButtons(self):
         if self._active_panel == self._left_panel:
-            arrow = "\u27A1"
+            arrow = "\u2192"
             flow = "Left \u2192 Right"
             other = "right"
         else:
-            arrow = "\u2B05"
+            arrow = "\u2190"
             flow = "Right \u2192 Left"
             other = "left"
-        self._btn_copy_dir.setText(arrow)
-        self._btn_move_dir.setText(arrow)
+        self._setCenterIcon(self._btn_copy_dir, "copy", arrow)
+        self._setCenterIcon(self._btn_move_dir, "move", arrow)
         self._btn_copy_dir.setToolTip(
             "Copy to other panel\n\n"
             f"Copy selected items to the {other} panel. Flow: {flow}. Shortcut: F6."
@@ -1444,12 +1632,33 @@ class FileManagerApp(QMainWindow):
             f"Move selected items to the {other} panel. Flow: {flow}. Shortcut: F7."
         )
         if hasattr(self, "_btn_special"):
-            self._btn_special.setText(arrow)
+            self._setCenterIcon(self._btn_special, "special", arrow)
             self._btn_special.setToolTip(
                 "Special transfers\n\n"
                 f"Copy or move keeping structure to the {other} panel "
                 f"(Flow: {flow}), or copy relative/full paths to the clipboard."
             )
+        self._setCenterIcon(self._btn_swap, "swap", "\u21C4")
+        self._setCenterIcon(self._btn_mirror, "mirror", "\u21C9")
+
+    # --------------------------------------------------------
+    # Method: _setCenterIcon
+    # Purpose: Draw the action icon, flipped when the arrow
+    #          points left. The text arrow remains if the
+    #          sheet did not load.
+    # --------------------------------------------------------
+    def _setCenterIcon(self, button, action_id, fallback):
+        from action_icons import iconForAction
+
+        point_left = self._active_panel is self._right_panel
+        directional = action_id in ("copy", "move", "special")
+        icon = iconForAction(action_id, mirrored=directional and point_left)
+        if icon.isNull():
+            button.setText(fallback)
+            return
+        button.setIcon(icon)
+        button.setText("")
+        button.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
     # --------------------------------------------------------
     # Method: _initTransfers
@@ -1590,11 +1799,10 @@ class FileManagerApp(QMainWindow):
             btn.setToolTip(tip)
             btn.clicked.connect(callback)
             btn.setFocusPolicy(Qt.NoFocus)
-            btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             short = text.split(" ", 1)[0]
             self._bottom_button_specs.append((btn, text, short))
-            layout.addWidget(btn)
-        layout.addStretch(1)
+            layout.addWidget(btn, 1)
 
         self.centralWidget().layout().addWidget(self._bottom_bar)
 
@@ -2617,7 +2825,11 @@ class FileManagerApp(QMainWindow):
         self._right_panel.setShowHidden(checked)
 
     def _onOpenSettings(self):
-        dialog = SettingsDialog(self._settings, self)
+        dialog = SettingsDialog(
+            self._settings,
+            self,
+            on_theme_preview=self._previewTheme,
+        )
         dialog.profileImported.connect(self._onSettingsProfileImported)
         if dialog.exec_() != QDialog.Accepted:
             return
@@ -2631,6 +2843,22 @@ class FileManagerApp(QMainWindow):
         self._updateMirrorTooltips()
         if self._warnIfSaveFailed(saved):
             self._showStatus("Settings saved.")
+
+    # --------------------------------------------------------
+    # Method: _previewTheme
+    # Purpose: Paint a theme while the theme list is open.
+    #          Font size and density stay as they are saved.
+    # --------------------------------------------------------
+    def _previewTheme(self, theme_id):
+        app = QApplication.instance()
+        applyTheme(
+            app,
+            theme_id,
+            int(self._settings.getSetting("font_size", 10)),
+            self._settings.getSetting("ui_scale", 100),
+        )
+        self._applyUiMetrics()
+        self._refreshThemedIcons()
 
     # --------------------------------------------------------
     # Method: _applySettingsValues
@@ -2668,14 +2896,51 @@ class FileManagerApp(QMainWindow):
     #          File-type pictures stay as drawn on the sheet.
     # --------------------------------------------------------
     def _refreshThemedIcons(self):
+        from action_icons import applyThemeIconColors, setIconSet
         from file_icons import applyThemeAccent
 
-        if not applyThemeAccent():
+        setIconSet(self._settings.getSetting("action_icon_set", "tile"))
+        accent_changed = applyThemeAccent()
+        applyThemeIconColors()
+        self._applyToolbarIcons()
+        self._updateDirectionButtons()
+        if hasattr(self, "_left_panel"):
+            self._left_panel.applyActionIcons()
+            self._right_panel.applyActionIcons()
+        if not accent_changed:
             return
         self._left_panel.refreshItemIcons()
         self._right_panel.refreshItemIcons()
         if hasattr(self, "_bookmarks_panel"):
             self._bookmarks_panel.refreshIcons()
+
+    # --------------------------------------------------------
+    # Method: _applyToolbarIcons
+    # Purpose: Put the chosen action-icon set on the toolbar.
+    #          Copy and Move point toward the other panel.
+    # --------------------------------------------------------
+    def _applyToolbarIcons(self):
+        from action_icons import iconForAction
+
+        point_left = self._active_panel is self._right_panel
+        mapping = (
+            (getattr(self, "_tb_copy", None), "copy", True),
+            (getattr(self, "_tb_move", None), "move", True),
+            (getattr(self, "_tb_delete", None), "delete", False),
+            (getattr(self, "_tb_new_folder", None), "new_folder", False),
+            (getattr(self, "_tb_rename", None), "rename", False),
+            (getattr(self, "_tb_batch_rename", None), "batch_rename", False),
+            (getattr(self, "_tb_bookmark", None), "bookmark", False),
+            (getattr(self, "_tb_open_explorer", None), "reveal", False),
+            (getattr(self, "_tb_refresh", None), "refresh", False),
+            (getattr(self, "_tb_settings", None), "settings", False),
+        )
+        for action, action_id, directional in mapping:
+            if action is None:
+                continue
+            icon = iconForAction(action_id, mirrored=directional and point_left)
+            if not icon.isNull():
+                action.setIcon(icon)
 
     # --------------------------------------------------------
     # Method: _onSettingsProfileImported
@@ -2708,10 +2973,14 @@ class FileManagerApp(QMainWindow):
             return self._active_panel.currentPath()
         return ""
 
-    def _onAddBookmark(self):
-        if not self._active_panel:
+    def _onAddBookmark(self, panel=None):
+        # The shortcut is a QAction, so triggered passes a bool.
+        if not isinstance(panel, FilePanel):
+            panel = None
+        target = panel if panel is not None else self._active_panel
+        if target is None:
             return
-        path = self._active_panel.currentPath()
+        path = target.currentPath()
         if not path:
             return
 
@@ -3383,6 +3652,18 @@ class FileManagerApp(QMainWindow):
                 lambda: self._onAssignFolderTags(entries[0]["full_path"])
             )
 
+        if not has_selection and not in_archive:
+            terminal_here_action = menu.addAction("Open Terminal Here")
+            terminal_here_action.setToolTip(
+                "Open terminal here\n\n"
+                "Open the default terminal in this panel's current folder."
+            )
+            terminal_here_action.triggered.connect(
+                lambda: self._onOpenFolderInTerminal(
+                    {"full_path": panel.currentPath(), "is_dir": True}
+                )
+            )
+
         if not in_archive:
             bookmark_action = menu.addAction("Bookmark This Folder")
             bookmark_action.setToolTip(
@@ -3473,39 +3754,7 @@ class FileManagerApp(QMainWindow):
             )
             return
         try:
-            system = platform.system()
-            if system == "Windows":
-                wt = shutil.which("wt")
-                if wt:
-                    subprocess.Popen([wt, "-d", folder])
-                else:
-                    # CREATE_NEW_CONSOLE so cmd opens in its own window.
-                    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                    subprocess.Popen(
-                        ["cmd.exe", "/K", f'cd /d "{folder}"'],
-                        creationflags=creationflags,
-                    )
-            elif system == "Darwin":
-                subprocess.Popen(["open", "-a", "Terminal", folder])
-            else:
-                launched = False
-                for cmd in (
-                    ["x-terminal-emulator", f"--working-directory={folder}"],
-                    ["gnome-terminal", f"--working-directory={folder}"],
-                    ["konsole", "--workdir", folder],
-                    ["xfce4-terminal", f"--working-directory={folder}"],
-                ):
-                    exe = shutil.which(cmd[0])
-                    if exe:
-                        subprocess.Popen([exe] + cmd[1:])
-                        launched = True
-                        break
-                if not launched:
-                    raise OSError(
-                        "No supported terminal found "
-                        "(tried x-terminal-emulator, gnome-terminal, "
-                        "konsole, xfce4-terminal)."
-                    )
+            openTerminalAt(folder)
             self._showStatus(f"Opened terminal in: {folder}")
         except Exception as e:
             QMessageBox.warning(
@@ -3552,10 +3801,16 @@ class FileManagerApp(QMainWindow):
     def _onOpenActivePathInExplorer(self):
         if not self._active_panel:
             return
+        self._openFolderInExplorer(self._active_panel.currentPath())
 
-        path = self._active_panel.currentPath()
+    # --------------------------------------------------------
+    # Method: _openFolderInExplorer
+    # Purpose: Open one folder in the system file manager.
+    #          A tab's right-click menu passes that tab's path.
+    # --------------------------------------------------------
+    def _openFolderInExplorer(self, path):
         if not path or not os.path.isdir(path):
-            self._showStatus("No active folder to open.")
+            self._showStatus("No folder to open.")
             return
 
         try:
@@ -3568,8 +3823,16 @@ class FileManagerApp(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Error",
-                f"Could not open the active folder in the file explorer:\n{e}",
+                f"Could not open the folder in the file explorer:\n{e}",
             )
+
+    # --------------------------------------------------------
+    # Method: _openFolderInTerminal
+    # Purpose: Open the default terminal in one folder.
+    #          A tab's right-click menu passes that tab's path.
+    # --------------------------------------------------------
+    def _openFolderInTerminal(self, path):
+        self._onOpenFolderInTerminal({"full_path": path or "", "is_dir": True})
 
     # --------------------------------------------------------
     # Properties Dialog

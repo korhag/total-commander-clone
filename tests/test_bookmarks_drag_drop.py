@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QPoint
+from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
 from bookmarks_panel import (
@@ -43,6 +45,19 @@ def _sample_nodes():
             ],
         },
     ]
+
+
+class _DropEvent:
+    """The slice of QDropEvent that dropEvent uses."""
+
+    def __init__(self):
+        self.action = None
+
+    def setDropAction(self, action):
+        self.action = action
+
+    def accept(self):
+        return None
 
 
 def _find(tree, name):
@@ -195,6 +210,37 @@ class TestBookmarkDragDrop(unittest.TestCase):
         self.assertEqual([child["name"] for child in work_node["children"]], ["Notes", "Docs"])
         self.assertTrue(work_node["expanded"])
         self.assertNotIn("Docs", [node["name"] for node in structure])
+
+    def test_group_drop_asks_for_a_name_after_the_drop_ends(self):
+        tree = self._tree()
+        docs = _find(tree, "Docs")
+        later = _find(tree, "Later")
+        tree.setCurrentItem(later)
+        tree._drop_action = DropAction(
+            "group",
+            docs,
+            tree.invisibleRootItem(),
+            0,
+            'Create a new group with "Docs"',
+            None,
+        )
+        asked = []
+
+        def fake_ask(parent, title, label, text):
+            asked.append(text)
+            return "Bundled"
+
+        event = _DropEvent()
+        with patch("bookmarks_panel._askText", fake_ask):
+            tree.dropEvent(event)
+            self.assertEqual(asked, [])
+            self.assertNotIn("Bundled", [node["name"] for node in tree.getStructure()])
+            QTest.qWait(0)
+        self.assertEqual(asked, ["New Group"])
+        bundled = next(node for node in tree.getStructure() if node["name"] == "Bundled")
+        self.assertEqual([child["name"] for child in bundled["children"]], ["Docs", "Later"])
+        self.assertEqual(event.action, Qt.IgnoreAction)
+        tree.close()
 
     def test_create_group_keeps_nested_expanded_state(self):
         tree = self._tree()

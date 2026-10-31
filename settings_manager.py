@@ -45,6 +45,12 @@ DEFAULT_SETTINGS = {
     "show_hidden_files": False,
     "confirm_delete": True,
     "theme_mode": "dark",
+    # Action icons: "tile", "line", or "mixed".
+    "action_icon_set": "tile",
+    # Main toolbar: "icon_only", "text_beside", or "text_under".
+    "toolbar_button_style": "text_beside",
+    # Main toolbar: "small", "medium", or "large".
+    "toolbar_icon_size": "small",
     "default_left_path": "",
     "default_right_path": "",
     "column_widths": {

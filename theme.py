@@ -121,6 +121,7 @@ def getUiMetrics(font_size_pt, ui_scale_percent=DEFAULT_UI_SCALE_PERCENT):
         "toolbar_icon": px(16, 14),
         "bottom_bar_height": px(26, 22),
         "center_panel_width": px(40, 36),
+        "center_button_size": px(30, 24),
         "center_button_min_height": px(24, 18),
         "btn_min_height": px(16, 14),
         "table_cell_pad_v": px(1, 1),
@@ -134,7 +135,6 @@ def getUiMetrics(font_size_pt, ui_scale_percent=DEFAULT_UI_SCALE_PERCENT):
         "toolbtn_pad_h": px(6, 4),
         "bottom_btn_pad_v": px(2, 1),
         "bottom_btn_pad_h": px(8, 6),
-        "bottom_btn_max_width": px(120, 90),
         "menu_item_pad_v": px(4, 2),
         "menu_item_pad_h": px(14, 10),
         "menu_item_icon_pad": px(16, 12),
@@ -1191,6 +1191,13 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         border-radius: {m['radius_lg']}px;
         background-color: {c['base']};
     }}
+    /* The bar's own font is what Qt uses to measure and elide
+       tab labels. The ::tab rule below draws at "small", so the
+       bar must use the same size or the first and last letters
+       of a folder name get clipped. */
+    QTabBar {{
+        font-size: {fs['small']}pt;
+    }}
     QTabBar::tab {{
         background-color: {c['mantle']};
         color: {c['subtext0']};
@@ -1358,7 +1365,6 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         font-size: {fs['small']}pt;
         color: {c['subtext1']};
         min-width: 0;
-        max-width: {m['bottom_btn_max_width']}px;
     }}
     QFrame#bottomBar QPushButton:hover {{
         background-color: {c['button_hover']};
@@ -1373,43 +1379,29 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         background-color: {c['mantle']};
         border: none;
     }}
-    QFrame#centerPanel QPushButton {{
+    QToolButton#centerActionButton {{
         background-color: {c['button']};
-        color: {c['subtext1']};
+        color: {c['blue']};
         border: 1px solid {c['border']};
         border-radius: {m['radius']}px;
-        padding: {m['center_btn_pad_v']}px {m['center_btn_pad_h']}px;
+        padding: 0;
         font-size: {fs['center_glyph']}pt;
         font-weight: bold;
-        min-height: {m['center_button_min_height']}px;
+        min-width: {m['center_button_size']}px;
+        max-width: {m['center_button_size']}px;
+        min-height: {m['center_button_size']}px;
+        max-height: {m['center_button_size']}px;
     }}
-    QFrame#centerPanel QPushButton:hover {{
+    QToolButton#centerActionButton:hover {{
         background-color: {c['button_hover']};
-        color: {c['text']};
+        color: {c['blue']};
         border-color: {c['active_border']};
     }}
-    QFrame#centerPanel QPushButton:pressed {{
+    QToolButton#centerActionButton:pressed {{
         background-color: {c['button_press']};
+        color: {c['blue']};
     }}
-    QFrame#centerPanel QToolButton#centerSpecialButton {{
-        background-color: {c['button']};
-        color: {c['subtext1']};
-        border: 1px solid {c['border']};
-        border-radius: {m['radius']}px;
-        padding: {m['center_btn_pad_v']}px {m['center_btn_pad_h']}px;
-        font-size: {fs['center_glyph']}pt;
-        font-weight: bold;
-        min-height: {m['center_button_min_height']}px;
-    }}
-    QFrame#centerPanel QToolButton#centerSpecialButton:hover {{
-        background-color: {c['button_hover']};
-        color: {c['text']};
-        border-color: {c['active_border']};
-    }}
-    QFrame#centerPanel QToolButton#centerSpecialButton:pressed {{
-        background-color: {c['button_press']};
-    }}
-    QFrame#centerPanel QToolButton#centerSpecialButton::menu-indicator {{
+    QToolButton#centerActionButton::menu-indicator {{
         image: none;
         width: 0;
     }}
@@ -1472,7 +1464,7 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         border: none;
     }}
     QComboBox#driveCombo QAbstractItemView {{
-        text-align: center;
+        text-align: left;
     }}
     QComboBox#driveCombo QLineEdit {{
         background: transparent;
@@ -1481,7 +1473,7 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         padding: 0 {m['drive_edit_pad_h']}px;
         min-height: 0;
         max-height: {m['nav_bar_height']}px;
-        text-align: center;
+        text-align: left;
     }}
     QComboBox#driveCombo QLineEdit:focus {{
         border: none;

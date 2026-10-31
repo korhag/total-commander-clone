@@ -30,6 +30,26 @@
             "name": "3D-designs",
             "path": "/home/korhag/PARA/02-Areas/Workshop/3D-designs",
             "kind": "folder"
+        },
+        {
+            "type": "bookmark",
+            "name": "Kromeka-Shared",
+            "path": "/home/korhag/Kromeka-Shared"
+        },
+        {
+            "type": "bookmark",
+            "name": "25 - OTOMASYON VE YAZILIM",
+            "path": "/home/korhag/Kromeka-Shared/25 - OTOMASYON VE YAZILIM"
+        },
+        {
+            "type": "bookmark",
+            "name": "10 - SATIŞ",
+            "path": "/home/korhag/Kromeka-Shared/10 - SATIŞ"
+        },
+        {
+            "type": "bookmark",
+            "name": "11 - PROJELER",
+            "path": "/home/korhag/Kromeka-Shared/11 - PROJELER"
         }
     ],
     "explicit_empty": false

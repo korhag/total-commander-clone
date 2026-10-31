@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.20.1] - 2026-10-31
+
+### Fixed
+
+- **Bookmarks**: The new-group name can be typed. The box opens after the drag lets go of the keyboard, and the name field is focused. Rename uses the same box.
+
+## [0.20.0] - 2026-10-31
+
+### Added
+
+- **Theme list**: The Theme row opens a small window with five names. A click previews that theme on the app. Hold the button labeled with the previous theme to compare, then release. Accept keeps the new theme and saves it. Cancel puts the previous theme back.
+
+## [0.19.2] - 2026-10-31
+
+### Added
+
+- **Folder tabs**: Right-click a tab for **Open in Explorer** and **Open in Terminal**. Both use the folder that tab is showing.
+
+## [0.19.1] - 2026-10-31
+
+### Added
+
+- **Favorite**: Each file panel has a star on the navigation row. It saves the folder open in that panel. The same star is in the icon set already, and the overflow menu has **Favorite** when the row is tight.
+
+### Changed
+
+- **Settings**: The window is wide enough for the labels, hints, and choices, and the long notes wrap instead of being cut off.
+- **Drive**: The drive name is left-aligned, so the start of a long name stays visible.
+- **Center strip**: Copy, Move, Special, Swap, and Mirror are icons only. The buttons stay the same size, and the names stay in the tooltips.
+- **Filter**: The button next to the filter says **Filter settings** (or **Filter** on a narrower panel).
+
+## [0.19.0] - 2026-10-31
+
+### Added
+
+- **Toolbar**: Right-click the main toolbar to choose icons only, icons and text, or text under the icons, and to choose small, medium, or large icons. The choice is saved.
+- **Column order**: Drag a file-list header to put the columns in the order you want. Each panel remembers its own order. Reset column order in the header menu puts them back to Name, Size, Type, Date Modified.
+
+## [0.18.0] - 2026-10-31
+
+### Added
+
+- **Icon set**: Settings has Tiles, Line, and Mixed. The choice is saved. Tiles take the theme accent. Line icons take the text color. Mixed uses tiles for Copy through Delete and line icons for the rest. The toolbar, the panel buttons, and the center strip all use the set you pick.
+
+### Changed
+
+- **File list columns**: Size, Type, and Date Modified stay as wide as their text. Name takes the rest of the pane. A column you dragged, or locked from the header menu, keeps that width. The Size title sits with the numbers, on the right.
+
+## [0.17.0] - 2026-10-31
+
+### Changed
+
+- **Center strip**: Copy, Move, Special, Swap, and Mirror are the same square button. The arrows are plain glyphs in the theme accent, so they no longer show up as blue emoji tiles. Captions stay evenly spaced.
+- **F-key bar**: The bottom buttons share the bar in equal widths. A tight window still shortens them to F2, F3, and so on.
+- **Tab row**: The **+** button is the same height as the folder tabs and square.
+
+### Fixed
+
+- **Keyboard**: After a folder opens, the cursor is on the first row, so Down does not skip it. Home and End move to the first and last row. Up (and Backspace) lands on the folder you just left.
+
+## [0.16.1] - 2026-10-31
+
+### Fixed
+
+- **Folder tabs**: Tab names are drawn in the same size they are measured, so the first and last letters stay visible. A long name is still shortened in the middle, and the full path remains in the tooltip.
+- **Open Folder in Terminal**: On Linux this opens the default terminal (`TERMINAL`, then `xdg-terminal-exec`, then a known terminal such as alacritty, kitty, or foot) in that folder. On Windows it opens Windows Terminal when it is installed, and Command Prompt otherwise. Right-click empty space in a panel for **Open Terminal Here**.
+
 ## [0.16.0] - 2026-10-31
 
 ### Added

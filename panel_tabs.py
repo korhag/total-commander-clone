@@ -96,6 +96,9 @@ class PanelTabBar(QTabBar):
     tabDisplayed = pyqtSignal()
     # The window opens the tab, so the panel it belongs to becomes active.
     newTabRequested = pyqtSignal()
+    # Right-click a tab: open that tab's folder outside the app.
+    openInExplorerRequested = pyqtSignal(str)
+    openInTerminalRequested = pyqtSignal(str)
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
@@ -323,26 +326,92 @@ class PanelTabBar(QTabBar):
         super().mouseDoubleClickEvent(event)
 
     # --------------------------------------------------------
-    # Method: contextMenuEvent
-    # Purpose: Right-click menu for a new tab, closing this
-    #          tab, or closing every tab except this one.
+    # Method: folderForTab
+    # Purpose: The real folder that tab is showing. The current
+    #          tab uses the panel. Another tab uses the path
+    #          saved when you left it.
     # --------------------------------------------------------
-    def contextMenuEvent(self, event):
-        index = self.tabAt(event.pos())
+    def folderForTab(self, index):
+        if isinstance(index, bool) or not isinstance(index, int):
+            return ""
+        if not (0 <= index < self.count()):
+            return ""
+        if index == self._current:
+            path = self._panel.currentPath() or ""
+        else:
+            state = self._states[index] if index < len(self._states) else {}
+            path = ""
+            if isinstance(state, dict):
+                path = state.get("current_path") or ""
+        if not isinstance(path, str) or not path:
+            return ""
+        try:
+            path = os.path.normpath(path)
+        except (OSError, ValueError):
+            return ""
+        if os.path.isdir(path):
+            return path
+        return ""
+
+    # --------------------------------------------------------
+    # Method: tabContextMenu
+    # Purpose: New, close, and — when a tab was clicked —
+    #          open that folder in the file manager or a terminal.
+    # --------------------------------------------------------
+    def tabContextMenu(self, index):
         only_one = self.count() <= 1
         menu = QMenu(self)
         new_action = menu.addAction("New Tab")
+        new_action.setData("new")
         close_action = menu.addAction("Close Tab")
+        close_action.setData("close")
         others_action = menu.addAction("Close Other Tabs")
+        others_action.setData("others")
         close_action.setEnabled(index >= 0 and not only_one)
         others_action.setEnabled(index >= 0 and not only_one)
+        if index >= 0:
+            menu.addSeparator()
+            folder = self.folderForTab(index)
+            explorer_action = menu.addAction("Open in Explorer")
+            explorer_action.setData("explorer")
+            explorer_action.setToolTip(
+                "Open in Explorer\n\n"
+                "Open this tab's folder in the system file manager."
+            )
+            explorer_action.setEnabled(bool(folder))
+            terminal_action = menu.addAction("Open in Terminal")
+            terminal_action.setData("terminal")
+            terminal_action.setToolTip(
+                "Open in Terminal\n\n"
+                "Open the default terminal in this tab's folder."
+            )
+            terminal_action.setEnabled(bool(folder))
+        return menu
+
+    # --------------------------------------------------------
+    # Method: contextMenuEvent
+    # Purpose: Right-click menu for a new tab, closing this
+    #          tab, or opening that tab's folder outside the app.
+    # --------------------------------------------------------
+    def contextMenuEvent(self, event):
+        index = self.tabAt(event.pos())
+        menu = self.tabContextMenu(index)
         chosen = menu.exec_(event.globalPos())
-        if chosen is new_action:
+        kind = chosen.data() if chosen is not None else None
+        if kind == "new":
             self.newTabRequested.emit()
-        elif chosen is close_action:
+        elif kind == "close":
             self.closeTab(index)
-        elif chosen is others_action:
+        elif kind == "others":
             self.closeOtherTabs(index)
+        elif kind == "explorer":
+            folder = self.folderForTab(index)
+            if folder:
+                self.openInExplorerRequested.emit(folder)
+        elif kind == "terminal":
+            folder = self.folderForTab(index)
+            if folder:
+                self.openInTerminalRequested.emit(folder)
         event.accept()
 
     def _appendAndSwitch(self, state):
