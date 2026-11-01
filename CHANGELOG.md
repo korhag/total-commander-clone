@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.22.3] - 2026-11-01
+
+### Fixed
+
+- **Steppers**: The up and down buttons show **+** and **−** instead of a blank square. Combo and date menus use a chevron.
+- **Calendar**: The date popup starts on Monday. Saturday and Sunday are the weekend.
+
+## [0.22.2] - 2026-11-01
+
+### Fixed
+
+- **Themes**: Spin-box steppers, date drop-downs, and combo arrows use a lighter button, a clear divider, and an arrow in the text color, so they stay visible on every palette.
+
+## [0.22.1] - 2026-11-01
+
+### Changed
+
+- **Settings**: Filter settings and Settings are split into cards. **What to list**, including **Include subfolders**, sits on its own highlighted card. Radio choices use a filled accent circle, and the selected label is bold, so the choice stays visible on dark themes.
+
+## [0.22.0] - 2026-11-01
+
+### Added
+
+- **Fields**: Select several folders, right-click, and choose **Edit Fields**. The popup says how many folders are selected and shows only values they all share. A new value is added to every folder. Removing a shared value removes it from every folder. Values that only some folders have are left as they are. Folders outside the active library are skipped and counted.
+
 ## [0.21.1] - 2026-11-01
 
 ### Changed

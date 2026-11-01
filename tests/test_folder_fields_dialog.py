@@ -7,7 +7,7 @@ import unittest
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 
 from library_dialogs import FoldingCompleter, FolderFieldsDialog, LibraryRootDialog
 
@@ -80,6 +80,19 @@ class TestFolderFieldsDialog(unittest.TestCase):
             dialog.values()["fields"][created[0]["temp_id"]],
             ["Ahmet Yılmaz"],
         )
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_several_folders_show_the_count(self):
+        dialog = FolderFieldsDialog(
+            ["/tmp/Workshop", "/tmp/Archive", "/tmp/Notes"],
+            [{"id": "c", "name": "Customer"}],
+            {},
+        )
+        header = dialog.findChild(QLabel, "folderHeader")
+        self.assertIn("3 folders selected", header.text())
+        self.assertIn("Workshop", header.text())
+        self.assertIn("(3 folders)", dialog.windowTitle())
         dialog.close()
         dialog.deleteLater()
 

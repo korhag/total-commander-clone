@@ -36,7 +36,7 @@ from bookmarks_panel import BookmarksPanel
 from dialog_utils import askText
 from libraries_panel import LibrariesPanel
 from library_dialogs import FolderFieldsDialog, LibraryRootDialog
-from library_manager import LibraryManager
+from library_manager import LibraryManager, mergeFieldEdits, sharedFieldValues
 from settings_manager import SettingsManager
 from windows_shell_clipboard import setFileClipboard, getClipboardDropEffect
 from app_version import APP_VERSION, APP_NAME, getWindowTitle
@@ -3406,10 +3406,25 @@ class FileManagerApp(QMainWindow):
     def _onEditCurrentFolderFields(self):
         self._onEditFolderFields(self._activeFolderCandidate())
 
-    def _onEditFolderFields(self, folder_path=""):
-        if not folder_path:
-            folder_path = self._activeFolderCandidate()
-        if not folder_path or not os.path.isdir(folder_path):
+    # --------------------------------------------------------
+    # Method: _folderPathsFrom
+    # Purpose: One path, a list of paths, or the active folder.
+    # --------------------------------------------------------
+    def _folderPathsFrom(self, folder_paths):
+        if isinstance(folder_paths, str):
+            raw = [folder_paths] if folder_paths else []
+        elif folder_paths:
+            raw = [path for path in folder_paths if isinstance(path, str) and path]
+        else:
+            raw = []
+        if not raw:
+            candidate = self._activeFolderCandidate()
+            raw = [candidate] if candidate else []
+        return [path for path in raw if os.path.isdir(path)]
+
+    def _onEditFolderFields(self, folder_paths=""):
+        paths = self._folderPathsFrom(folder_paths)
+        if not paths:
             QMessageBox.information(
                 self, "Fields", "Select a folder or open one in the active panel first."
             )
@@ -3418,8 +3433,7 @@ class FileManagerApp(QMainWindow):
         if not libraries:
             return
         library_id = self._libraries_panel.selectedLibraryId()
-        context = self._library_manager.resolveFolderContext(folder_path, library_id)
-        if context is None:
+        if len(paths) == 1 and self._library_manager.resolveFolderContext(paths[0], library_id) is None:
             answer = QMessageBox.question(
                 self,
                 "Library root",
@@ -3429,47 +3443,70 @@ class FileManagerApp(QMainWindow):
             )
             if answer != QMessageBox.Yes:
                 return
-            added = self._library_manager.addRoot(library_id, folder_path)
+            added = self._library_manager.addRoot(library_id, paths[0])
             if added is None:
                 QMessageBox.warning(self, "Library", "Could not add that root.")
                 return
+            library_id = added["library"]["id"]
             self._reloadLibrariesPanel(library_id)
-            context = self._library_manager.resolveFolderContext(folder_path, library_id)
-            if context is None:
-                return
 
-        library_id = context["library"]["id"]
+        ready = []
+        skipped = 0
+        for path in paths:
+            if self._library_manager.resolveFolderContext(path, library_id) is None:
+                skipped += 1
+                continue
+            ready.append(path)
+        if not ready:
+            if skipped:
+                self._showStatus(
+                    f"No folders updated. {skipped} skipped (not in this library)."
+                )
+            return
+
+        field_maps = []
+        for path in ready:
+            record = self._library_manager.getFolderRecordForPath(path, library_id) or {}
+            field_maps.append({
+                field_id: list(values)
+                for field_id, values in (record.get("fields") or {}).items()
+            })
+        before = sharedFieldValues(field_maps)
         fields = self._library_manager.getFields(library_id)
-        record = self._library_manager.getFolderRecordForPath(folder_path, library_id) or {}
         suggestions = {
             field["id"]: self._library_manager.getFieldValues(library_id, field["id"])
             for field in fields
         }
-        dialog = FolderFieldsDialog(
-            folder_path,
-            fields,
-            record.get("fields") or {},
-            suggestions,
-            parent=self,
-        )
+        dialog = FolderFieldsDialog(ready, fields, before, suggestions, parent=self)
         if dialog.exec_() != QDialog.Accepted:
             return
-        self._applyFolderFieldEdits(folder_path, library_id, dialog.values())
+        self._applyFolderFieldEdits(ready, library_id, before, dialog.values())
         self._reloadLibrariesPanel(library_id)
-        self._showStatus(f"Fields updated for: {folder_path}")
+        if skipped:
+            self._showStatus(
+                f"Fields updated for {len(ready)} folders, "
+                f"{skipped} skipped (not in this library)."
+            )
+        elif len(ready) == 1:
+            self._showStatus(f"Fields updated for: {ready[0]}")
+        else:
+            self._showStatus(f"Fields updated for {len(ready)} folders.")
 
-    def _applyFolderFieldEdits(self, folder_path, library_id, values):
+    def _applyFolderFieldEdits(self, folder_paths, library_id, before, values):
         id_map = {}
         for created in values.get("created", []):
             field = self._library_manager.createField(library_id, created.get("name", ""))
             if field:
                 id_map[created.get("temp_id", "")] = field["id"]
-        cleaned = {}
+        after = {}
         for field_id, field_values in (values.get("fields") or {}).items():
             real_id = id_map.get(field_id, field_id)
-            cleaned.setdefault(real_id, [])
-            cleaned[real_id].extend(field_values)
-        self._library_manager.setFolderFields(folder_path, library_id, cleaned)
+            after.setdefault(real_id, [])
+            after[real_id].extend(field_values)
+        for path in folder_paths:
+            record = self._library_manager.getFolderRecordForPath(path, library_id) or {}
+            merged = mergeFieldEdits(record.get("fields") or {}, before, after)
+            self._library_manager.setFolderFields(path, library_id, merged)
 
     def _onExportLibrary(self, library_id=""):
         if not library_id:
@@ -3856,12 +3893,23 @@ class FileManagerApp(QMainWindow):
                 lambda: self._onAddRoot(entries[0]["full_path"])
             )
 
-            edit_fields_action = menu.addAction("Edit Fields...")
-            edit_fields_action.setToolTip(
-                "Edit fields\n\nSet field values for this folder in the active library."
+        folder_paths = [entry["full_path"] for entry in entries if entry.get("is_dir")]
+        if folder_paths and not in_archive:
+            folder_count = len(folder_paths)
+            edit_label = (
+                "Edit Fields..."
+                if folder_count == 1
+                else f"Edit Fields ({folder_count} folders)..."
             )
+            edit_fields_action = menu.addAction(edit_label)
+            edit_fields_action.setToolTip(
+                "Edit fields\n\n"
+                "Set field values for the selected folders in the active library. "
+                "Only values shared by every folder are shown."
+            )
+            chosen_folders = list(folder_paths)
             edit_fields_action.triggered.connect(
-                lambda: self._onEditFolderFields(entries[0]["full_path"])
+                lambda: self._onEditFolderFields(chosen_folders)
             )
 
         if not has_selection and not in_archive:

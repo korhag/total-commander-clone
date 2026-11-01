@@ -11,9 +11,11 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt, QDateTime
+from PyQt5.QtGui import QColor, QFont, QTextCharFormat
+from PyQt5.QtWidgets import QApplication, QDateTimeEdit, QSpinBox
 
+from filter_options_dialog import configureCalendarWeek
 from theme import (
     PALETTE_KEYS,
     THEMES,
@@ -163,6 +165,109 @@ class TestThemePalettes(unittest.TestCase):
                 )
 
 
+def _pixel(image, x, y):
+    color = image.pixelColor(x, y)
+    return f"#{color.red():02x}{color.green():02x}{color.blue():02x}"
+
+
+def _button_column_contrast(widget):
+    """Best contrast between the field and the button column on the right."""
+    widget.resize(240, 36)
+    widget.show()
+    QApplication.processEvents()
+    image = widget.grab().toImage()
+    field = _pixel(image, image.width() // 4, image.height() // 2)
+    best = 1.0
+    x0 = max(0, image.width() - 20)
+    for x in range(x0, max(x0 + 1, image.width() - 1)):
+        for y in range(2, image.height() - 2):
+            best = max(best, _contrast(field, _pixel(image, x, y)))
+    return best
+
+
+def _up_button_is_a_plus(widget, text_color, surface_color):
+    """A plus: the cross is the text color, and a nearby corner stays the surface."""
+    del text_color
+    widget.resize(240, 36)
+    widget.show()
+    QApplication.processEvents()
+    image = widget.grab().toImage()
+    width = image.width()
+    height = image.height()
+    best = 1.0
+    mark_x = width - 9
+    mark_y = max(4, height // 4)
+    for x in range(width - 18, width - 2):
+        for y in range(2, max(3, height // 2 - 1)):
+            ratio = _contrast(_pixel(image, x, y), surface_color)
+            if ratio > best:
+                best = ratio
+                mark_x = x
+                mark_y = y
+    horizontal = _pixel(image, max(0, mark_x - 1), mark_y)
+    vertical = _pixel(image, mark_x, max(0, mark_y - 1))
+    corner = _pixel(image, max(0, mark_x - 4), max(0, mark_y - 3))
+    return (
+        best >= 3
+        and _contrast(horizontal, surface_color) >= 2
+        and _contrast(vertical, surface_color) >= 2
+        and _contrast(corner, surface_color) < 1.8
+    )
+
+
+# ------------------------------------------------------------
+# Class: TestStepperContrast
+# Purpose: Stepper and calendar buttons stay visible on every palette.
+# ------------------------------------------------------------
+class TestStepperContrast(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls._app = QApplication.instance() or QApplication([])
+        cls._spin = QSpinBox()
+        cls._date = QDateTimeEdit(QDateTime.currentDateTime())
+        cls._date.setCalendarPopup(True)
+
+    def test_stepper_and_date_buttons_clear_the_field(self):
+        for theme_id, spec in THEMES.items():
+            colors = spec["colors"]
+            sheet = getThemeStylesheet(colors)
+            for name, widget in (("spin", self._spin), ("date", self._date)):
+                widget.setStyleSheet(sheet)
+                ratio = _button_column_contrast(widget)
+                self.assertGreaterEqual(
+                    ratio,
+                    3,
+                    f"{theme_id} {name} button contrast {ratio:.2f}",
+                )
+            self.assertTrue(
+                _up_button_is_a_plus(self._spin, colors["text"], colors["surface2"]),
+                f"{theme_id} up button is not a plus",
+            )
+
+    def test_calendar_week_starts_on_monday(self):
+        edit = QDateTimeEdit()
+        edit.setCalendarPopup(True)
+        calendar = edit.calendarWidget()
+        friday = QTextCharFormat()
+        friday.setForeground(QColor("#ff0000"))
+        calendar.setWeekdayTextFormat(Qt.Friday, friday)
+        calendar.setFirstDayOfWeek(Qt.Sunday)
+        configureCalendarWeek(edit)
+        self.assertEqual(calendar.firstDayOfWeek(), Qt.Monday)
+        monday = calendar.weekdayTextFormat(Qt.Monday).foreground().color().name()
+        self.assertEqual(
+            calendar.weekdayTextFormat(Qt.Friday).foreground().color().name(),
+            monday,
+        )
+        saturday = calendar.weekdayTextFormat(Qt.Saturday).foreground().color().name()
+        self.assertEqual(
+            calendar.weekdayTextFormat(Qt.Sunday).foreground().color().name(),
+            saturday,
+        )
+        self.assertNotEqual(saturday, monday)
+
+
 class _ThemeApp:
     """The slice of QApplication that applyTheme talks to."""
 
@@ -170,12 +275,19 @@ class _ThemeApp:
         self.sheets = 0
         self._system_style_name = ""
         self._system_palette = None
+        self._style = None
 
     def font(self):
         return QFont("Segoe UI", 10)
 
     def setFont(self, font):
         return None
+
+    def style(self):
+        return self._style
+
+    def setStyle(self, style):
+        self._style = style
 
     def setStyleSheet(self, sheet):
         self.sheets += 1

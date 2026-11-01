@@ -21,8 +21,11 @@ from PyQt5.QtWidgets import (
     QDateTimeEdit,
     QMessageBox,
     QInputDialog,
+    QScrollArea,
+    QWidget,
 )
-from PyQt5.QtCore import QDateTime
+from PyQt5.QtCore import Qt, QDateTime
+from PyQt5.QtGui import QColor, QTextCharFormat
 
 from filter_spec import FilterSpec
 
@@ -47,6 +50,25 @@ def _mb_to_bytes(mb):
     return int(mb * 1024 * 1024)
 
 
+# ------------------------------------------------------------
+# Function: configureCalendarWeek
+# Purpose: Monday is the first column. Saturday and Sunday are
+#          the weekend, even when the locale treats Friday as one.
+# ------------------------------------------------------------
+def configureCalendarWeek(edit):
+    calendar = edit.calendarWidget()
+    calendar.setFirstDayOfWeek(Qt.Monday)
+    weekday = calendar.weekdayTextFormat(Qt.Monday)
+    weekend = calendar.weekdayTextFormat(Qt.Saturday)
+    if weekend.foreground().color() == weekday.foreground().color():
+        weekend = QTextCharFormat(weekday)
+        weekend.setForeground(QColor("#e06c75"))
+    for day in (Qt.Monday, Qt.Tuesday, Qt.Wednesday, Qt.Thursday, Qt.Friday):
+        calendar.setWeekdayTextFormat(day, weekday)
+    for day in (Qt.Saturday, Qt.Sunday):
+        calendar.setWeekdayTextFormat(day, weekend)
+
+
 def _bytes_to_mb(b):
     if b is None or b <= 0:
         return 0
@@ -63,26 +85,21 @@ class FilterOptionsDialog(QDialog):
         self.resize(560, 640)
 
         root = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget(scroll)
+        body_layout = QVBoxLayout(body)
 
-        # --- Name filter (toolbar mirror) ---
-        name_box = QGroupBox("Name filter (toolbar)", self)
+        # --- Find by name ---
+        name_box = QGroupBox("Find by name", self)
         name_form = QFormLayout()
         self._filter_text = QLineEdit(self)
         self._filter_text.setPlaceholderText(
             "Words to find in file or folder name (separate with spaces or commas)…"
         )
         name_form.addRow("Include", self._filter_text)
-
-        words_row = QHBoxLayout()
-        self._bg_words = QButtonGroup(self)
-        self._rb_words_and = QRadioButton("Match all words (AND)")
-        self._rb_words_or = QRadioButton("Match any word (OR)")
-        self._bg_words.addButton(self._rb_words_and)
-        self._bg_words.addButton(self._rb_words_or)
-        words_row.addWidget(self._rb_words_and)
-        words_row.addWidget(self._rb_words_or)
-        words_row.addStretch()
-        name_form.addRow("Multiple words", words_row)
 
         self._filter_exclude = QLineEdit(self)
         self._filter_exclude.setPlaceholderText(
@@ -95,7 +112,29 @@ class FilterOptionsDialog(QDialog):
             "File types only, e.g. txt, pdf, docx (folders are not filtered by extension)"
         )
         name_form.addRow("Extensions", self._filter_extensions)
+        name_box.setLayout(name_form)
+        body_layout.addWidget(name_box)
 
+        # --- How to match ---
+        match_box = QGroupBox("How to match", self)
+        match_layout = QVBoxLayout(match_box)
+        words_label = QLabel("Words", self)
+        words_label.setObjectName("sectionLabel")
+        match_layout.addWidget(words_label)
+        words_row = QHBoxLayout()
+        self._bg_words = QButtonGroup(self)
+        self._rb_words_and = QRadioButton("Match all words (AND)")
+        self._rb_words_or = QRadioButton("Match any word (OR)")
+        self._bg_words.addButton(self._rb_words_and)
+        self._bg_words.addButton(self._rb_words_or)
+        words_row.addWidget(self._rb_words_and)
+        words_row.addWidget(self._rb_words_or)
+        words_row.addStretch()
+        match_layout.addLayout(words_row)
+
+        pattern_label = QLabel("Pattern", self)
+        pattern_label.setObjectName("sectionLabel")
+        match_layout.addWidget(pattern_label)
         match_row = QHBoxLayout()
         self._bg_match = QButtonGroup(self)
         self._rb_contains = QRadioButton("Contains text")
@@ -105,37 +144,45 @@ class FilterOptionsDialog(QDialog):
             self._bg_match.addButton(rb)
             match_row.addWidget(rb)
         match_row.addStretch()
-        name_form.addRow("Match mode", match_row)
+        match_layout.addLayout(match_row)
+        body_layout.addWidget(match_box)
 
-        kind_row = QHBoxLayout()
+        # --- What to list ---
+        list_box = QGroupBox("What to list", self)
+        list_box.setObjectName("emphasisGroup")
+        list_layout = QVBoxLayout(list_box)
         self._bg_kind = QButtonGroup(self)
         self._rb_kind_all = QRadioButton("All items")
         self._rb_kind_dirs = QRadioButton("Folders only")
         self._rb_kind_files = QRadioButton("Files only")
         for rb in (self._rb_kind_all, self._rb_kind_dirs, self._rb_kind_files):
             self._bg_kind.addButton(rb)
-            kind_row.addWidget(rb)
-        kind_row.addStretch()
-        name_form.addRow("Show", kind_row)
+            list_layout.addWidget(rb)
 
-        self._chk_subfolders = QCheckBox(
-            "Include subfolders when listing (recursive search)", self
-        )
+        self._chk_subfolders = QCheckBox("Include subfolders", self)
+        self._chk_subfolders.setObjectName("emphasisCheck")
         self._chk_subfolders.setToolTip(
             "When enabled, the file list includes every item under the current folder. "
             "Large trees can take a while; a progress window with Cancel appears while scanning."
         )
-        name_form.addRow("Search scope", self._chk_subfolders)
-        name_box.setLayout(name_form)
-        root.addWidget(name_box)
+        list_layout.addWidget(self._chk_subfolders)
+        scope_hint = QLabel(
+            "Looks through every folder inside this one. Large trees show a progress window.",
+            self,
+        )
+        scope_hint.setObjectName("cardHint")
+        scope_hint.setWordWrap(True)
+        list_layout.addWidget(scope_hint)
+        body_layout.addWidget(list_box)
 
-        # --- Advanced: size + date ---
-        adv_box = QGroupBox("Size and date (advanced)", self)
-        adv_layout = QVBoxLayout()
+        # --- Size and date ---
+        adv_box = QGroupBox("Size and date", self)
+        adv_layout = QVBoxLayout(adv_box)
 
         self._chk_size = QCheckBox("Filter by file size (folders are not excluded by size)", self)
         adv_layout.addWidget(self._chk_size)
         sz_form = QFormLayout()
+        sz_form.setContentsMargins(24, 0, 0, 0)
         self._spin_min_mb = QSpinBox(self)
         self._spin_min_mb.setRange(0, 2_000_000)
         self._spin_min_mb.setSpecialValueText("—")
@@ -154,16 +201,22 @@ class FilterOptionsDialog(QDialog):
         self._chk_date = QCheckBox("Filter by modification date", self)
         adv_layout.addWidget(self._chk_date)
         dt_form = QFormLayout()
+        dt_form.setContentsMargins(24, 0, 0, 0)
         self._dt_after = QDateTimeEdit(self)
         self._dt_after.setCalendarPopup(True)
         self._dt_after.setDisplayFormat("yyyy-MM-dd HH:mm")
+        configureCalendarWeek(self._dt_after)
         self._dt_before = QDateTimeEdit(self)
         self._dt_before.setCalendarPopup(True)
         self._dt_before.setDisplayFormat("yyyy-MM-dd HH:mm")
+        configureCalendarWeek(self._dt_before)
         dt_form.addRow("Modified on or after", self._dt_after)
         dt_form.addRow("Modified on or before", self._dt_before)
         adv_layout.addLayout(dt_form)
 
+        combine_label = QLabel("When both are on", self)
+        combine_label.setObjectName("sectionLabel")
+        adv_layout.addWidget(combine_label)
         combine_row = QHBoxLayout()
         self._bg_combine = QButtonGroup(self)
         self._rb_and = QRadioButton("Require both size and date (AND)")
@@ -174,15 +227,16 @@ class FilterOptionsDialog(QDialog):
         combine_row.addWidget(self._rb_or)
         combine_row.addStretch()
         adv_layout.addLayout(combine_row)
-        adv_box.setLayout(adv_layout)
-        root.addWidget(adv_box)
+        body_layout.addWidget(adv_box)
 
-        root.addWidget(QLabel(
-            "Include, exclude, and extension rules apply together with the advanced "
-            "size/date block (name AND advanced). Exclude removes matches even when "
-            "include terms match.",
+        hint = QLabel(
+            "Name rules and the size/date block apply together. "
+            "Exclude still removes a name even when it matches Include.",
             self,
-        ))
+        )
+        hint.setObjectName("cardHint")
+        hint.setWordWrap(True)
+        body_layout.addWidget(hint)
 
         # --- Saved filters ---
         preset_box = QGroupBox("Saved filters", self)
@@ -197,7 +251,10 @@ class FilterOptionsDialog(QDialog):
         preset_layout.addWidget(self._btn_preset_save)
         preset_layout.addWidget(self._btn_preset_delete)
         preset_box.setLayout(preset_layout)
-        root.addWidget(preset_box)
+        body_layout.addWidget(preset_box)
+        body_layout.addStretch(1)
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
 
         self._btn_preset_load.clicked.connect(self._onPresetLoad)
         self._btn_preset_save.clicked.connect(self._onPresetSave)

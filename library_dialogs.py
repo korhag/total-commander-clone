@@ -1,8 +1,9 @@
 """
 Total Commander Clone - Library Dialogs
-Dialogs for adding a root and editing the fields on one folder.
+Dialogs for adding a root and editing fields on one or more folders.
 """
 
+import os
 import uuid
 
 from PyQt5.QtCore import Qt, QStringListModel, QTimer
@@ -180,20 +181,43 @@ class _ValueRow(QWidget):
 
 
 # ------------------------------------------------------------
+# Function: _folderHeaderText
+# Purpose: One path, or a count plus each folder name.
+# ------------------------------------------------------------
+def _folderHeaderText(folder_paths):
+    if len(folder_paths) == 1:
+        return folder_paths[0]
+    names = []
+    for path in folder_paths:
+        name = os.path.basename(str(path).rstrip("/\\")) or str(path)
+        names.append(name)
+    count = len(folder_paths)
+    noun = "folder" if count == 1 else "folders"
+    return f"{count} {noun} selected\n" + "\n".join(names)
+
+
+# ------------------------------------------------------------
 # Class: FolderFieldsDialog
 # Purpose: Pick existing fields or create one, then edit the
-#          values stored on a single folder.
+#          values stored on the selected folders.
 # ------------------------------------------------------------
 class FolderFieldsDialog(QDialog):
 
     # --------------------------------------------------------
     # Method: __init__
-    # Input: fields (list of {id, name}), current ({id: [values]}),
-    #        suggestions ({id: [values already used]})
+    # Input: folder_paths (str or list), fields (list of {id, name}),
+    #        current ({id: [values]}), suggestions ({id: [values]})
     # --------------------------------------------------------
-    def __init__(self, folder_path, fields=None, current=None, suggestions=None, parent=None):
+    def __init__(self, folder_paths, fields=None, current=None, suggestions=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Fields")
+        if isinstance(folder_paths, str):
+            folder_paths = [folder_paths]
+        folder_paths = [path for path in (folder_paths or []) if path]
+        count = len(folder_paths)
+        if count > 1:
+            self.setWindowTitle(f"Edit Fields ({count} folders)")
+        else:
+            self.setWindowTitle("Edit Fields")
         self.setMinimumSize(760, 480)
         self._fields = [dict(field) for field in (fields or [])]
         self._current = {
@@ -206,7 +230,8 @@ class FolderFieldsDialog(QDialog):
         self._value_edits = {}
 
         layout = QVBoxLayout(self)
-        path_label = QLabel(folder_path)
+        path_label = QLabel(_folderHeaderText(folder_paths))
+        path_label.setObjectName("folderHeader")
         path_label.setWordWrap(True)
         layout.addWidget(path_label)
 

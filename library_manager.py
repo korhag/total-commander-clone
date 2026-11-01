@@ -118,6 +118,101 @@ def matchesFolderFilters(field_map, filters):
 
 
 # ------------------------------------------------------------
+# Function: sharedFieldValues
+# Purpose: Values that every folder has for the same field.
+#          Spelling comes from the first folder. Comparison uses
+#          foldText, so "İstanbul" and "istanbul" count as one.
+# ------------------------------------------------------------
+def sharedFieldValues(field_maps):
+    maps = [item if isinstance(item, dict) else {} for item in (field_maps or [])]
+    if not maps:
+        return {}
+    shared_ids = set(maps[0].keys())
+    for other in maps[1:]:
+        shared_ids &= set(other.keys())
+    result = {}
+    for field_id in maps[0]:
+        if field_id not in shared_ids:
+            continue
+        kept = []
+        seen = set()
+        for value in maps[0].get(field_id) or []:
+            folded = foldText(value)
+            if not folded or folded in seen:
+                continue
+            if not all(
+                any(foldText(item) == folded for item in (other.get(field_id) or []))
+                for other in maps[1:]
+            ):
+                continue
+            seen.add(folded)
+            kept.append(value)
+        if kept:
+            result[field_id] = kept
+    return result
+
+
+# ------------------------------------------------------------
+# Function: mergeFieldEdits
+# Purpose: Apply a shared-value edit to one folder. Added values
+#          are appended. Removed shared values are dropped.
+#          Values that were not shared stay, in their old order.
+#          A field that was shared and is missing afterwards has
+#          its shared values removed.
+# ------------------------------------------------------------
+def mergeFieldEdits(existing, before, after):
+    existing = existing if isinstance(existing, dict) else {}
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    field_ids = []
+    seen_ids = set()
+    for source in (existing, before, after):
+        for field_id in source:
+            if field_id in seen_ids:
+                continue
+            seen_ids.add(field_id)
+            field_ids.append(field_id)
+
+    result = {}
+    for field_id in field_ids:
+        before_values = list(before.get(field_id) or []) if field_id in before else []
+        if field_id in before and field_id not in after:
+            removed = {foldText(value) for value in before_values if foldText(value)}
+            added = []
+        else:
+            after_values = list(after.get(field_id) or []) if field_id in after else []
+            before_folded = {foldText(value) for value in before_values if foldText(value)}
+            after_folded = {foldText(value) for value in after_values if foldText(value)}
+            removed = before_folded - after_folded
+            added = []
+            added_seen = set()
+            for value in after_values:
+                folded = foldText(value)
+                if not folded or folded in before_folded or folded in added_seen:
+                    continue
+                added_seen.add(folded)
+                added.append(value)
+
+        kept = []
+        kept_seen = set()
+        for value in existing.get(field_id) or []:
+            folded = foldText(value)
+            if not folded or folded in removed or folded in kept_seen:
+                continue
+            kept_seen.add(folded)
+            kept.append(value)
+        for value in added:
+            folded = foldText(value)
+            if not folded or folded in kept_seen:
+                continue
+            kept_seen.add(folded)
+            kept.append(value)
+        if kept:
+            result[field_id] = kept
+    return result
+
+
+# ------------------------------------------------------------
 # Function: _termMatchesAny
 # Purpose: True when the folded term is part of any value.
 # ------------------------------------------------------------

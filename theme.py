@@ -5,8 +5,11 @@ system styles. Sizes follow font size and interface density.
 """
 
 import os
+import tempfile
 
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PyQt5.QtWidgets import QProxyStyle, QStyle
 
 from theme_palettes import OMARCHY_SEEDS, buildPalette
 
@@ -610,6 +613,34 @@ def _rgba(hex_color, alpha):
 # Purpose: Returns the complete QSS stylesheet for one dark
 #          palette, scaled by the current font size and density.
 # ------------------------------------------------------------
+def _markIcon(text_color, kind):
+    """A small PNG of + , − , or a chevron. Qt cannot draw those as borders."""
+    folder = os.path.join(tempfile.gettempdir(), "tcc-control-marks")
+    os.makedirs(folder, exist_ok=True)
+    safe = str(text_color).lstrip("#").lower()
+    path = os.path.join(folder, f"{safe}-{kind}.png")
+    if not os.path.isfile(path):
+        image = QImage(18, 18, QImage.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        color = QColor(text_color)
+        if kind == "chevron":
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(4, 6, 9, 12)
+            painter.drawLine(9, 12, 14, 6)
+        else:
+            painter.setPen(color)
+            font = painter.font()
+            font.setPixelSize(15)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(image.rect(), int(Qt.AlignCenter), "+" if kind == "plus" else "−")
+        painter.end()
+        image.save(path, "PNG")
+    return path.replace("\\", "/")
+
+
 def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     c = palette
     if metrics is None:
@@ -617,6 +648,9 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     sf = metrics["ui_scale_percent"] / 100.0
     fs = _fontSizesPt(font_size_pt, sf)
     m = metrics
+    plus_icon = _markIcon(c["text"], "plus")
+    minus_icon = _markIcon(c["text"], "minus")
+    chevron_icon = _markIcon(c["text"], "chevron")
     red_12 = _rgba(c["red"], 0.12)
     red_14 = _rgba(c["red"], 0.14)
     red_28 = _rgba(c["red"], 0.28)
@@ -913,6 +947,100 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     }}
 
     /* ====================================================== */
+    /* Spin boxes and date fields                              */
+    /* The number sits in an inner line edit. The stepper and */
+    /* calendar button are separate, so they need their own   */
+    /* fill, divider, and arrow or they match the dialog.     */
+    /* ====================================================== */
+    QSpinBox {{
+        background-color: {c['input_bg']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-radius: {m['radius_lg']}px;
+        padding: {m['input_pad_v']}px {m['input_pad_h']}px;
+        padding-right: {m['combo_drop_width']}px;
+        selection-background-color: {c['selection']};
+    }}
+    QSpinBox:focus {{
+        border: 1px solid {c['active_border']};
+    }}
+    QSpinBox QLineEdit {{
+        background: transparent;
+        border: none;
+        padding: 0;
+        selection-background-color: {c['selection']};
+    }}
+    QSpinBox::up-button,
+    QSpinBox::down-button {{
+        subcontrol-origin: border;
+        width: {m['combo_drop_width']}px;
+        background-color: {c['surface2']};
+        border-left: 1px solid {c['subtext1']};
+    }}
+    QSpinBox::up-button {{
+        subcontrol-position: top right;
+        border-bottom: 1px solid {c['subtext1']};
+        border-top-right-radius: {m['radius']}px;
+    }}
+    QSpinBox::down-button {{
+        subcontrol-position: bottom right;
+        border-bottom-right-radius: {m['radius']}px;
+    }}
+    QSpinBox::up-button:hover,
+    QSpinBox::down-button:hover {{
+        background-color: {c['button_hover']};
+        border-left: 1px solid {c['active_border']};
+    }}
+    QSpinBox::up-arrow {{
+        image: url("{plus_icon}");
+        width: 12px;
+        height: 12px;
+    }}
+    QSpinBox::down-arrow {{
+        image: url("{minus_icon}");
+        width: 12px;
+        height: 12px;
+    }}
+    QDateTimeEdit {{
+        background-color: {c['input_bg']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-radius: {m['radius_lg']}px;
+        padding: {m['input_pad_v']}px {m['input_pad_h']}px;
+        padding-right: {m['combo_drop_width']}px;
+        selection-background-color: {c['selection']};
+    }}
+    QDateTimeEdit:focus {{
+        border: 1px solid {c['active_border']};
+    }}
+    QDateTimeEdit QLineEdit {{
+        background: transparent;
+        border: none;
+        padding: 0;
+        selection-background-color: {c['selection']};
+    }}
+    QDateTimeEdit::up-button,
+    QDateTimeEdit::down-button {{
+        width: 0;
+        height: 0;
+        border: none;
+    }}
+    QDateTimeEdit::drop-down {{
+        subcontrol-origin: border;
+        subcontrol-position: center right;
+        width: {m['combo_drop_width']}px;
+        background-color: {c['surface2']};
+        border-left: 1px solid {c['subtext1']};
+        border-top-right-radius: {m['radius']}px;
+        border-bottom-right-radius: {m['radius']}px;
+    }}
+    QDateTimeEdit::down-arrow {{
+        image: url("{chevron_icon}");
+        width: 12px;
+        height: 12px;
+    }}
+
+    /* ====================================================== */
     /* Table View (File Listing)                               */
     /* ====================================================== */
     QTableView {{
@@ -1132,7 +1260,17 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         subcontrol-origin: margin;
         subcontrol-position: top left;
         padding: 0 {m['group_title_pad_h']}px;
-        color: {c['subtext1']};
+        color: {c['text']};
+        font-weight: bold;
+    }}
+    QGroupBox#emphasisGroup {{
+        background-color: {c['surface0']};
+        border: 1px solid {c['active_border']};
+    }}
+    QGroupBox#emphasisGroup QRadioButton,
+    QGroupBox#emphasisGroup QCheckBox,
+    QGroupBox#emphasisGroup QLabel {{
+        background: transparent;
     }}
 
     /* ====================================================== */
@@ -1149,8 +1287,18 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         border: 1px solid {c['active_border']};
     }}
     QComboBox::drop-down {{
-        border: none;
+        subcontrol-origin: border;
+        subcontrol-position: center right;
         width: {m['combo_drop_width']}px;
+        background-color: {c['surface2']};
+        border-left: 1px solid {c['subtext1']};
+        border-top-right-radius: {m['radius']}px;
+        border-bottom-right-radius: {m['radius']}px;
+    }}
+    QComboBox::down-arrow {{
+        image: url("{chevron_icon}");
+        width: 12px;
+        height: 12px;
     }}
     QComboBox QAbstractItemView {{
         background-color: {c['mantle']};
@@ -1181,6 +1329,44 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     QCheckBox::indicator:checked {{
         background-color: {c['active_border']};
         border-color: {c['active_border']};
+    }}
+    QCheckBox#emphasisCheck {{
+        font-weight: bold;
+    }}
+
+    /* ====================================================== */
+    /* Radio Button                                            */
+    /* ====================================================== */
+    QRadioButton {{
+        color: {c['text']};
+        spacing: {m['checkbox_spacing']}px;
+        background: transparent;
+    }}
+    QRadioButton:checked {{
+        font-weight: bold;
+    }}
+    QRadioButton::indicator {{
+        width: {m['checkbox_size']}px;
+        height: {m['checkbox_size']}px;
+        border: 2px solid {c['border']};
+        border-radius: {m['checkbox_size'] // 2}px;
+        background-color: {c['input_bg']};
+    }}
+    QRadioButton::indicator:hover {{
+        border-color: {c['active_border']};
+    }}
+    QRadioButton::indicator:checked {{
+        background-color: {c['active_border']};
+        border-color: {c['active_border']};
+    }}
+    QLabel#sectionLabel {{
+        font-weight: bold;
+        background: transparent;
+        color: {c['text']};
+    }}
+    QLabel#cardHint {{
+        color: {c['subtext0']};
+        background: transparent;
     }}
 
     /* ====================================================== */
@@ -1534,6 +1720,76 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     """
 
 
+# ------------------------------------------------------------
+# Class: PaletteMarkStyle
+# Purpose: Draw + and − when Qt asks the style. A styled button
+#          does not ask, so the stylesheet also uses the PNG marks
+#          from _markIcon. A border triangle would be a square.
+# ------------------------------------------------------------
+class PaletteMarkStyle(QProxyStyle):
+
+    def __init__(self, text_color, base=None):
+        if base is None:
+            from PyQt5.QtWidgets import QStyleFactory
+            base = QStyleFactory.create("Fusion")
+        super().__init__(base)
+        self._text = QColor(text_color)
+
+    def setTextColor(self, text_color):
+        self._text = QColor(text_color)
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element in (QStyle.PE_IndicatorSpinUp, QStyle.PE_IndicatorSpinPlus):
+            self._drawText(painter, option, "+")
+            return
+        if element in (QStyle.PE_IndicatorSpinDown, QStyle.PE_IndicatorSpinMinus):
+            self._drawText(painter, option, "−")
+            return
+        if element == QStyle.PE_IndicatorArrowDown and _isDropDownHost(widget):
+            self._drawChevron(painter, option)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def _drawText(self, painter, option, text):
+        painter.save()
+        painter.setPen(self._text)
+        font = painter.font()
+        font.setPixelSize(max(8, min(option.rect.width(), option.rect.height()) - 1))
+        painter.setFont(font)
+        painter.drawText(option.rect, Qt.AlignCenter, text)
+        painter.restore()
+
+    def _drawChevron(self, painter, option):
+        rect = option.rect
+        if rect.width() < 4 or rect.height() < 4:
+            return
+        painter.save()
+        painter.setPen(QPen(self._text, 1.6))
+        center_x = rect.center().x()
+        center_y = rect.center().y()
+        span = max(3, min(rect.width(), rect.height()) // 3)
+        painter.drawLine(center_x - span, center_y - span // 2, center_x, center_y + span // 2)
+        painter.drawLine(center_x, center_y + span // 2, center_x + span, center_y - span // 2)
+        painter.restore()
+
+
+def _isDropDownHost(widget):
+    if widget is None:
+        return False
+    return widget.inherits("QComboBox") or widget.inherits("QDateTimeEdit")
+
+
+def _installMarkStyle(app, text_color):
+    current = app.style() if hasattr(app, "style") else None
+    if isinstance(current, PaletteMarkStyle):
+        current.setTextColor(text_color)
+        return
+    if not hasattr(app, "setStyle"):
+        return
+    from PyQt5.QtWidgets import QStyleFactory
+    app.setStyle(PaletteMarkStyle(text_color, QStyleFactory.create("Fusion")))
+
+
 def applyTheme(app, theme_mode, font_size_pt=None, ui_scale_percent=None):
     """
     Apply a dark palette (custom QSS), light (Fusion), or the system style.
@@ -1575,6 +1831,7 @@ def applyTheme(app, theme_mode, font_size_pt=None, ui_scale_percent=None):
     if mode not in ("light", "system"):
         palette = getPalette(mode)
         app._theme_colors = palette
+        _installMarkStyle(app, palette["text"])
         app.setStyleSheet(
             getThemeStylesheet(palette, font_size_pt=font_size_pt, metrics=metrics)
         )

@@ -12,7 +12,9 @@ from library_manager import (
     LibraryManager,
     buildFolderKey,
     foldText,
+    mergeFieldEdits,
     normalizePath,
+    sharedFieldValues,
     storeRelativePath,
 )
 
@@ -259,6 +261,42 @@ class TestLibraryManager(unittest.TestCase):
     def test_scan_bases_include_the_home_folder(self):
         manager = LibraryManager(_MemorySettings())
         self.assertIn(os.path.expanduser("~"), manager._candidateScanBases())
+
+    def test_shared_field_values_fold_turkish_spelling(self):
+        shared = sharedFieldValues([
+            {"city": ["İstanbul", "Ankara"], "customer": ["Acme"]},
+            {"city": ["istanbul", "İzmir"], "customer": ["Other"]},
+            {"city": ["IŞIK", "İSTANBUL"]},
+        ])
+        self.assertEqual(list(shared), ["city"])
+        self.assertEqual(shared["city"], ["İstanbul"])
+
+    def test_merge_adds_removes_and_keeps_private_values(self):
+        existing = {"customer": ["Acme", "OnlyA"], "status": ["Open"]}
+        before = {"customer": ["Acme"], "status": ["Open"]}
+
+        added = mergeFieldEdits(
+            existing,
+            before,
+            {"customer": ["Acme", "New"], "status": ["Open"]},
+        )
+        self.assertEqual(added["customer"], ["Acme", "OnlyA", "New"])
+        self.assertEqual(added["status"], ["Open"])
+
+        removed = mergeFieldEdits(
+            existing,
+            before,
+            {"customer": [], "status": ["Open"]},
+        )
+        self.assertEqual(removed, {"customer": ["OnlyA"], "status": ["Open"]})
+
+        dropped = mergeFieldEdits(existing, before, {"customer": ["Acme"]})
+        self.assertEqual(dropped, {"customer": ["Acme", "OnlyA"]})
+
+    def test_merge_on_one_folder_matches_a_full_replace(self):
+        existing = {"customer": ["Acme", "Beta"], "status": ["Open"]}
+        after = {"customer": ["Beta", "Gamma"]}
+        self.assertEqual(mergeFieldEdits(existing, existing, after), after)
 
 
 if __name__ == "__main__":

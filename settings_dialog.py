@@ -48,11 +48,13 @@ class SettingsDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget(scroll)
         body_layout = QVBoxLayout(body)
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        look_box = QGroupBox("Look", self)
+        look_form = QFormLayout(look_box)
+        look_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        look_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        look_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        look_form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
 
         self._theme_button = QPushButton(self)
         self._theme_button.setToolTip(
@@ -60,7 +62,7 @@ class SettingsDialog(QDialog):
             "A click previews that theme. Accept keeps it. Cancel restores the previous one."
         )
         self._theme_button.clicked.connect(self._openThemePreview)
-        form.addRow("Theme", self._theme_button)
+        look_form.addRow("Theme", self._theme_button)
 
         self._icon_set = QComboBox(self)
         for set_id, label in iconSetChoices():
@@ -70,7 +72,7 @@ class SettingsDialog(QDialog):
             "Tiles follow the theme accent. Line icons follow the text color.\n"
             "Mixed uses tiles for the first row (Copy through Delete) and line icons after that."
         )
-        form.addRow("Icon set", self._icon_set)
+        look_form.addRow("Icon set", self._icon_set)
 
         self._font_size = QSpinBox(self)
         self._font_size.setRange(8, 24)
@@ -79,30 +81,35 @@ class SettingsDialog(QDialog):
             "Text and layout scale together.\n"
             "10 pt = 100% (default). Larger sizes grow row height, icons, and controls."
         )
-        form.addRow("Font size (10 = 100%)", self._font_size)
+        look_form.addRow("Font size (10 = 100%)", self._font_size)
         self._font_hint = self._hintLabel(
             "Scales text with row height, file-list icons, and control sizes so "
             "filenames stay readable. 10 pt is the default (100%)."
         )
-        form.addRow(self._font_hint)
+        look_form.addRow(self._font_hint)
 
         self._ui_scale = QComboBox(self)
         for pct in UI_SCALE_PRESETS:
             self._ui_scale.addItem(ui_scale_label(pct), pct)
-        form.addRow("Interface density", self._ui_scale)
+        look_form.addRow("Interface density", self._ui_scale)
         self._density_hint = self._hintLabel(
             "Extra spacing tweak on top of font size. "
             "Extra compact / Very compact fit small screens; Comfortable for touch or large monitors. "
             "Ctrl+mouse wheel also steps density."
         )
-        form.addRow(self._density_hint)
+        look_form.addRow(self._density_hint)
+        body_layout.addWidget(look_box)
 
+        files_box = QGroupBox("Files", self)
+        files_layout = QVBoxLayout(files_box)
         self._show_hidden = QCheckBox("Show hidden files", self)
-        form.addRow("Files", self._show_hidden)
-
         self._confirm_delete = QCheckBox("Ask before deleting files", self)
-        form.addRow("Delete", self._confirm_delete)
+        files_layout.addWidget(self._show_hidden)
+        files_layout.addWidget(self._confirm_delete)
+        body_layout.addWidget(files_box)
 
+        update_box = QGroupBox("Keep up to date", self)
+        update_layout = QVBoxLayout(update_box)
         self._check_updates = QCheckBox(
             "Check for updates from Git when the app starts", self
         )
@@ -110,8 +117,6 @@ class SettingsDialog(QDialog):
             "Compares this app’s version to APP_VERSION on the Git remote.\n"
             "If a newer version exists, you can pull and rebuild."
         )
-        form.addRow("Updates", self._check_updates)
-
         self._cache_scans = QCheckBox(
             "Cache recursive folder scans (Subfolders search)", self
         )
@@ -121,8 +126,6 @@ class SettingsDialog(QDialog):
             "Use the filter banner Refresh (or F5) to force a full scan from disk.\n"
             "Changes inside subfolders still need a manual Refresh."
         )
-        form.addRow("Search cache", self._cache_scans)
-
         self._auto_refresh = QCheckBox(
             "Reload panels when the folder changes outside this app", self
         )
@@ -131,14 +134,20 @@ class SettingsDialog(QDialog):
             "the file list updates on its own. Subfolders mode does not rescan the\n"
             "whole tree; press Refresh (F5) there."
         )
-        form.addRow("Auto-refresh", self._auto_refresh)
+        update_layout.addWidget(self._check_updates)
+        update_layout.addWidget(self._cache_scans)
+        update_layout.addWidget(self._auto_refresh)
+        body_layout.addWidget(update_box)
 
+        panels_box = QGroupBox("Panels", self)
+        panels_form = QFormLayout(panels_box)
+        panels_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        panels_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        panels_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._default_left_path = QLineEdit(self)
-        form.addRow("Default left path", self._default_left_path)
-
+        panels_form.addRow("Default left path", self._default_left_path)
         self._default_right_path = QLineEdit(self)
-        form.addRow("Default right path", self._default_right_path)
-
+        panels_form.addRow("Default right path", self._default_right_path)
         self._mirror_mode = QComboBox(self)
         self._mirror_mode.addItem(
             "Inactive panel follows active (open active’s folder in the other pane)",
@@ -148,9 +157,8 @@ class SettingsDialog(QDialog):
             "Active panel follows inactive (open inactive’s folder in the active pane)",
             "to_active",
         )
-        form.addRow("Mirror (Ctrl+Shift+M)", self._mirror_mode)
-
-        body_layout.addLayout(form)
+        panels_form.addRow("Mirror (Ctrl+Shift+M)", self._mirror_mode)
+        body_layout.addWidget(panels_box)
 
         profile_box = QGroupBox("Profile (settings, bookmarks, libraries)", self)
         profile_layout = QVBoxLayout(profile_box)
@@ -254,8 +262,8 @@ class SettingsDialog(QDialog):
             "Interface density",
             "Mirror (Ctrl+Shift+M)",
             "Default right path",
-            "Search cache",
-            "Auto-refresh",
+            "Keep up to date",
+            "Look",
         )
         for text in labels:
             longest_label = max(longest_label, metrics.horizontalAdvance(text))
