@@ -2,10 +2,10 @@
 setlocal EnableExtensions
 
 REM ------------------------------------------------------------
-REM Script: scripts/install.bat
+REM Script: scripts/install_windows.bat
 REM Purpose: Create project .venv (Windows cmd), install requirements.
-REM          Use this from Command Prompt or PowerShell: scripts\install.bat
-REM          For Git Bash / WSL, prefer: bash scripts/install.sh
+REM          Double-click this file, or run it from Command Prompt.
+REM          It does not use PowerShell.
 REM ------------------------------------------------------------
 
 cd /d "%~dp0.."

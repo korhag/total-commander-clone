@@ -4,7 +4,7 @@ setlocal EnableExtensions
 REM ------------------------------------------------------------
 REM Script: scripts/run.bat
 REM Purpose: Run main.py with the project .venv (Windows).
-REM          Run scripts\install.bat once to create .venv.
+REM          Run scripts\install_windows.bat once to create .venv.
 REM ------------------------------------------------------------
 
 cd /d "%~dp0.."
@@ -24,5 +24,5 @@ if exist ".venv\Scripts\python.exe" (
 )
 
 echo [ERROR] No virtual environment found. Create it with:
-echo         scripts\install.bat
+echo         scripts\install_windows.bat
 exit /b 1

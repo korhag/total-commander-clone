@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.21.1] - 2026-11-01
+
+### Changed
+
+- **Install**: The setup scripts are `scripts/install_windows.bat` (Command Prompt, no PowerShell), `scripts/install_linux.sh`, and `scripts/install_macos.sh`.
+
 ## [0.21.0] - 2026-11-01
 
 ### Added
