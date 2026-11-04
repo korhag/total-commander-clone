@@ -281,6 +281,49 @@ RUNCMD
 }
 
 # ------------------------------------------------------------
+# App the Dock pin keeps. The launcher runs the venv, so the
+# next install picks up the version just installed.
+# ------------------------------------------------------------
+write_macos_app() {
+  local app="$HOME/Applications/Total Commander Clone.app"
+  local macos="$app/Contents/MacOS"
+  local py="$ROOT/.venv/bin/python"
+  local version=""
+  mkdir -p "$macos"
+  if [[ -f "$ROOT/app_version.py" ]]; then
+    version="$(grep -E '^APP_VERSION[[:space:]]*=' "$ROOT/app_version.py" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+  fi
+  cat > "$macos/launcher" << EOF
+#!/bin/bash
+exec "$py" "$ROOT/main.py"
+EOF
+  chmod +x "$macos/launcher"
+  cat > "$app/Contents/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Total Commander Clone</string>
+  <key>CFBundleDisplayName</key>
+  <string>Total Commander Clone</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.tcclone.fileexplorer</string>
+  <key>CFBundleExecutable</key>
+  <string>launcher</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>${version}</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${version}</string>
+</dict>
+</plist>
+EOF
+  info "Wrote $app"
+}
+
+# ------------------------------------------------------------
 # 7-Zip command-line tool (archive browse / extract / compress).
 # Failure here is a warning: the app still runs, and archive
 # actions explain how to install 7-Zip.
@@ -330,9 +373,11 @@ main() {
   install_sevenzip || warn "Continuing without 7-Zip."
   write_run_sh
   write_run_command_macos
+  write_macos_app
 
   info "Done."
   info "  Start from a terminal:  bash scripts/run.sh"
+  info "  Dock / Applications:    Total Commander Clone"
   info "  macOS Finder:           double-click scripts/RUN.command (if needed: chmod +x scripts/RUN.command)"
 }
 

@@ -245,6 +245,37 @@ RUNSH
 }
 
 # ------------------------------------------------------------
+# Launcher the desktop and taskbar pin. It runs the venv, so the
+# next install picks up the version just installed.
+# ------------------------------------------------------------
+write_desktop_entry() {
+  local apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  local desktop="$apps_dir/total-commander-clone.desktop"
+  local py="$ROOT/.venv/bin/python"
+  mkdir -p "$apps_dir"
+  {
+    echo "[Desktop Entry]"
+    echo "Type=Application"
+    echo "Version=1.0"
+    echo "Name=Total Commander Clone"
+    echo "Comment=Dual-pane file manager"
+    printf 'Exec="%s" "%s"\n' "$py" "$ROOT/main.py"
+    printf 'Path=%s\n' "$ROOT"
+    if [[ -f "$ROOT/file-explorer.ico" ]]; then
+      printf 'Icon=%s\n' "$ROOT/file-explorer.ico"
+    fi
+    echo "Terminal=false"
+    echo "Categories=Utility;FileManager;"
+    echo "StartupWMClass=Total Commander Clone"
+  } > "$desktop"
+  chmod 644 "$desktop"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$apps_dir" || warn "Could not refresh the desktop database."
+  fi
+  info "Wrote $desktop"
+}
+
+# ------------------------------------------------------------
 # 7-Zip command-line tool (archive browse / extract / compress).
 # Failure here is a warning: the app still runs, and archive
 # actions explain how to install 7-Zip.
@@ -314,9 +345,11 @@ main() {
   create_venv_and_install "${PY_CMD[@]}"
   install_sevenzip || warn "Continuing without 7-Zip."
   write_run_sh
+  write_desktop_entry
 
   info "Done."
   info "  Start from a terminal:  bash scripts/run.sh"
+  info "  Taskbar / menu:         Total Commander Clone"
 }
 
 main "$@"

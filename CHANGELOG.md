@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
 
+## [0.22.5] - 2026-11-04
+
+### Fixed
+
+- **Install**: On Windows, install rebuilds the app the taskbar launches and points the Start Menu shortcut, and any existing taskbar or Desktop shortcut, at that build. On Linux and macOS, install refreshes the menu or Dock launcher so it runs the version just installed.
+
+## [0.22.4] - 2026-11-04
+
+### Fixed
+
+- **Copy**: Copying onto Google Drive keeps the file when the drive refuses the original date. A real failure stays on screen and says why (permission, file in use, drive full, path too long, or the cloud drive).
+- **Address bar**: Paste a path and press Enter to open that folder. A file path opens its folder and selects the file.
+
 ## [0.22.3] - 2026-11-01
 
 ### Fixed

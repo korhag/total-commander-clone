@@ -30,6 +30,14 @@ CONFLICT_SKIP_IF_SAME = "skip_if_same"
 # Sentinel returned by _askConflict when the user skips this item.
 _SKIP_ITEM = object()
 
+# Windows codes worth a plain sentence in the failure dialog.
+_WIN_ACCESS_DENIED = 5
+_WIN_SHARING_VIOLATION = 32
+_WIN_DISK_FULL = 112
+_WIN_PATH_TOO_LONG = 206
+# Cloud Files API (Google Drive, OneDrive) uses this range, with a few gaps.
+_CLOUD_WINERRORS = set(range(362, 399)) - {367, 368, 373, 384}
+
 
 class UserAbortError(Exception):
     """Raised when the user cancels the file operation from a conflict dialog."""
@@ -49,6 +57,56 @@ def _resolveConflictPath(dest_path):
 
 # Chunk size for byte-level copy progress (1 MiB)
 _COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _summarizeErrors(errors):
+    """One status line: the first failure, and a count when there are more."""
+    first = " ".join(str(errors[0]).split())
+    if len(errors) == 1:
+        return f"Completed with errors: {first}"
+    extra = len(errors) - 1
+    return f"Completed with errors: {first} (and {extra} more)"
+
+
+def explainFileError(message):
+    """
+    A short sentence for a known Windows or cloud error.
+    Returns "" when the raw system text is the best explanation.
+    """
+    if not message:
+        return ""
+    code = None
+    marker = "WinError "
+    start = message.find(marker)
+    if start >= 0:
+        digits = []
+        for ch in message[start + len(marker):]:
+            if ch.isdigit():
+                digits.append(ch)
+            else:
+                break
+        if digits:
+            code = int("".join(digits))
+    if code == _WIN_ACCESS_DENIED:
+        return "You do not have permission to write in that folder."
+    if code == _WIN_SHARING_VIOLATION:
+        return "The file is in use by another program."
+    if code == _WIN_DISK_FULL:
+        return "The drive is full."
+    if code == _WIN_PATH_TOO_LONG:
+        return "The path is too long."
+    if code in _CLOUD_WINERRORS:
+        return "The cloud drive could not finish this file."
+    lower = message.lower()
+    if "access is denied" in lower or "permission denied" in lower:
+        return "You do not have permission to write in that folder."
+    if "being used by another process" in lower or "sharing violation" in lower:
+        return "The file is in use by another program."
+    if "no space left" in lower or "disk full" in lower:
+        return "The drive is full."
+    if "file name too long" in lower or "path too long" in lower:
+        return "The path is too long."
+    return ""
 
 
 def _formatByteSize(num_bytes):
@@ -799,8 +857,7 @@ class FileOperationWorker(QThread):
                 self.errorOccurred.emit(file_name, str(e))
 
         if self._errors:
-            error_summary = "\n".join(self._errors)
-            self.operationFinished.emit(False, f"Completed with errors:\n{error_summary}")
+            self.operationFinished.emit(False, _summarizeErrors(self._errors))
         else:
             self._emitProgress("Done", total, total, percent_override=100)
             self.operationFinished.emit(True, f"Successfully processed {total} item(s).")
@@ -913,12 +970,24 @@ class FileOperationWorker(QThread):
                     dst_f.write(chunk)
                     bytes_in_item += len(chunk)
                     self._emitProgress(display_name, item_index, total_items, bytes_in_item)
-            shutil.copystat(source, dest_path)
         except Exception:
             self._removePartial(dest_path)
             raise
 
+        # Bytes are already in place. A cloud drive (Google Drive) often
+        # rejects timestamps; that must not delete the new file.
+        self._copyFileAttributes(source, dest_path)
         self._bytes_completed += item_size
+
+    # --------------------------------------------------------
+    # Method: _copyFileAttributes
+    # Purpose: Best-effort timestamps and mode. OSError is ignored.
+    # --------------------------------------------------------
+    def _copyFileAttributes(self, source, dest_path):
+        try:
+            shutil.copystat(source, dest_path)
+        except OSError:
+            pass
 
     # --------------------------------------------------------
     # Method: _copyDirectoryWithProgress
@@ -946,10 +1015,7 @@ class FileOperationWorker(QThread):
                 self._copyFileWithProgress(
                     src_file, dst_file, display, item_index, total_items
                 )
-        try:
-            shutil.copystat(source, dest_path)
-        except OSError:
-            pass
+        self._copyFileAttributes(source, dest_path)
 
     # --------------------------------------------------------
     # Method: _removePartial

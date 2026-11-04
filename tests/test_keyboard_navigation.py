@@ -101,6 +101,56 @@ class TestKeyboardNavigation(unittest.TestCase):
         QApplication.processEvents()
         self.assertEqual(self.panel._table.currentIndex().row(), 0)
 
+    def test_enter_in_path_box_opens_that_folder(self):
+        self._open(self._tmp)
+        self.panel._path_edit.setText(self.child)
+        self.panel._path_edit.setFocus()
+        QTest.keyClick(self.panel._path_edit, Qt.Key_Return)
+        _waitUntilLoaded(self.panel)
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(self.panel.currentPath())),
+            os.path.normcase(os.path.normpath(self.child)),
+        )
+
+    def test_enter_on_file_path_selects_that_file(self):
+        file_path = os.path.join(self._tmp, "a.txt")
+        self._open(self.child)
+        self.panel._path_edit.setText(file_path)
+        self.panel._path_edit.setFocus()
+        QTest.keyClick(self.panel._path_edit, Qt.Key_Return)
+        _waitUntilLoaded(self.panel)
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(self.panel.currentPath())),
+            os.path.normcase(os.path.normpath(self._tmp)),
+        )
+        row = self.panel._table.currentIndex().row()
+        source = self.panel._proxy_model.mapToSource(
+            self.panel._proxy_model.index(row, 0)
+        )
+        entry = self.panel._source_model.entryAt(source.row())
+        self.assertIsNotNone(entry)
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(entry["full_path"])),
+            os.path.normcase(os.path.normpath(file_path)),
+        )
+
+    def test_enter_on_missing_path_keeps_the_open_folder(self):
+        self._open(self._tmp)
+        missing = os.path.join(self._tmp, "no-such-folder")
+        self.panel._path_edit.setText(missing)
+        self.panel._path_edit.setFocus()
+        QTest.keyClick(self.panel._path_edit, Qt.Key_Return)
+        QApplication.processEvents()
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(self.panel.currentPath())),
+            os.path.normcase(os.path.normpath(self._tmp)),
+        )
+        self.assertIn("Folder not found", self.panel._status_label.text())
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(self.panel._path_edit.text())),
+            os.path.normcase(os.path.normpath(self._tmp)),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

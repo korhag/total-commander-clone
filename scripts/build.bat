@@ -57,6 +57,14 @@ if not exist "%ICON%" (
     exit /b 1
 )
 
+REM Prefer the project venv so install and build use the same packages.
+if exist ".venv\Scripts\python.exe" (
+    echo [INFO] Using project virtual environment (.venv^)...
+    set "PYTHON_EXE=.venv\Scripts\python.exe"
+    set "PYTHON_ARGS="
+    goto python_found
+)
+
 where py >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     set "PYTHON_EXE=py"
@@ -72,6 +80,8 @@ if %ERRORLEVEL% EQU 0 (
         )
     )
 )
+
+:python_found
 
 if "%PYTHON_EXE%"=="" (
     echo [ERROR] Python was not found.

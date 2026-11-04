@@ -28,7 +28,7 @@ from file_panel import (
 from drive_list import driveLabelForPath, listDrives
 from folder_stats import DriveSpaceWorker
 from recursive_scan_worker import retireThread, waitForThreads
-from file_operations import renameFile
+from file_operations import FileOperationWorker, explainFileError, renameFile
 from file_operation_queue import FileOperationQueue
 from transfers_bar import TransfersBar, TransfersDetailsDialog
 from batch_rename_dialog import BatchRenameDialog
@@ -1733,6 +1733,16 @@ class FileManagerApp(QMainWindow):
                 if self._promptArchivePassword(task.archive_path):
                     self._showStatus("Password saved. Run the extract again.")
                     return
+            cancelled = "cancel" in (message or "").lower()
+            operation = getattr(task, "operation", "")
+            if not cancelled and operation in (
+                FileOperationWorker.OPERATION_COPY,
+                FileOperationWorker.OPERATION_MOVE,
+                FileOperationWorker.OPERATION_DELETE,
+            ):
+                self._showTransferFailure(operation, message)
+                self._showStatus(message, timeout=0)
+                return
             self._showStatus(message)
             return
         for panel in (self._left_panel, self._right_panel):
@@ -1740,6 +1750,24 @@ class FileManagerApp(QMainWindow):
             if result == "fallback":
                 panel.refresh(force_rescan=True)
         self._showStatus(message)
+
+    # --------------------------------------------------------
+    # Method: _showTransferFailure
+    # Purpose: Keep a failed copy, move, or delete on screen.
+    #          The status line is one row and used to vanish.
+    # --------------------------------------------------------
+    def _showTransferFailure(self, operation, message):
+        titles = {
+            FileOperationWorker.OPERATION_COPY: "Copy failed",
+            FileOperationWorker.OPERATION_MOVE: "Move failed",
+            FileOperationWorker.OPERATION_DELETE: "Delete failed",
+        }
+        title = titles.get(operation, "Transfer failed")
+        detail = message or "The operation failed."
+        hint = explainFileError(detail)
+        if hint:
+            detail = f"{hint}\n\n{detail}"
+        QMessageBox.warning(self, title, detail)
 
     def _onTransferQueueIdle(self):
         self._transfers_bar.updateFromQueue(self._transfer_queue)
@@ -2499,12 +2527,18 @@ class FileManagerApp(QMainWindow):
         self._showStatus("Refreshed.")
 
     # --------------------------------------------------------
-    # Enter Key: If renaming, commit the rename. Otherwise
-    # open the file or navigate into the folder.
+    # Enter Key: The address bar opens the typed path. While
+    # renaming, Enter commits the name. Otherwise Enter opens
+    # the selected file or folder.
     # --------------------------------------------------------
     def _onEnterPressed(self):
         if not self._active_panel:
             return
+        focus = QApplication.focusWidget()
+        for panel in (self._left_panel, self._right_panel):
+            if focus is panel.pathEdit():
+                panel.commitPath()
+                return
         if self._active_panel.isRenaming():
             self._active_panel.commitRename()
             return
@@ -4427,8 +4461,21 @@ class FileManagerApp(QMainWindow):
         self._right_panel.refresh(force_rescan=True)
 
     def _showStatus(self, message, timeout=5000):
+        """Show a status line. timeout 0 keeps it until the next message."""
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        seq = self._status_seq
         self._status_info.setText(message)
-        QTimer.singleShot(timeout, lambda: self._status_info.setText("Ready"))
+        if timeout:
+            self._status_info.setToolTip("")
+            QTimer.singleShot(timeout, lambda s=seq: self._expireStatus(s))
+        else:
+            self._status_info.setToolTip(message)
+
+    def _expireStatus(self, seq):
+        if seq != getattr(self, "_status_seq", 0):
+            return
+        self._status_info.setText("Ready")
+        self._status_info.setToolTip("")
 
     def _updateStatusBar(self):
         if not self._active_panel:
@@ -4447,6 +4494,8 @@ class FileManagerApp(QMainWindow):
             self._status_info.setText(" | ".join(parts))
         else:
             self._status_info.setText("Ready")
+        self._status_info.setToolTip("")
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
 
     # --------------------------------------------------------
     # Method: _activePanelSideName

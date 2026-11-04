@@ -4111,6 +4111,14 @@ class FilePanel(QWidget):
                 self._table.setFocus()
                 self._moveFileSelection(1)
                 return True
+
+        # The window shortcut for Enter opens the selected file. Claim
+        # Return here so the address bar receives it and can navigate.
+        if event.type() == QEvent.ShortcutOverride and obj is self._path_edit:
+            bare = event.modifiers() in (Qt.NoModifier, Qt.KeypadModifier)
+            if bare and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                event.accept()
+                return True
         return super().eventFilter(obj, event)
 
     # --------------------------------------------------------
@@ -4142,9 +4150,32 @@ class FilePanel(QWidget):
     # Internal Slots
     # --------------------------------------------------------
     def _onPathEdited(self):
-        path = normalizePathInput(self._path_edit.text())
-        if path:
-            self.navigateTo(path)
+        self.commitPath()
+
+    # --------------------------------------------------------
+    # Method: commitPath
+    # Purpose: Open a typed or pasted path in this panel.
+    #          A folder or archive opens directly. A file opens
+    #          its parent and selects that file. A missing path
+    #          puts the current folder back in the address bar.
+    # --------------------------------------------------------
+    def commitPath(self, path=None):
+        if path is None:
+            path = self._path_edit.text()
+        path = normalizePathInput(path)
+        if not path:
+            return False
+        if self.navigateTo(path):
+            return True
+        if os.path.isfile(path):
+            parent = os.path.dirname(path)
+            if parent and self.navigateTo(parent, focus_path=path):
+                return True
+        current = self._source_model.currentPath()
+        if current:
+            self._path_edit.setText(current)
+        self._status_label.setText(f"Folder not found: {path}")
+        return False
 
     def _copyPathToClipboard(self):
         """Copy current folder path to clipboard."""
@@ -4155,19 +4186,9 @@ class FilePanel(QWidget):
             self.pathCopied.emit(path)
 
     def _pastePathAndNavigate(self):
-        """Paste path from clipboard and navigate to that folder."""
+        """Paste path from clipboard and open that folder or file."""
         clipboard = QApplication.clipboard()
-        text = clipboard.text()
-        path = normalizePathInput(text)
-        if not path:
-            return
-        if self.navigateTo(path):
-            return
-        if os.path.isfile(path):
-            parent = os.path.dirname(path)
-            if parent and os.path.isdir(parent):
-                self._path_edit.setText(parent)
-                self.navigateTo(parent)
+        self.commitPath(clipboard.text())
 
     def _openCurrentFolderInSystemExplorer(self):
         """Open this panel's current folder in the OS file manager (no dialog)."""

@@ -14,7 +14,12 @@ from unittest import mock
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
-from file_operations import CONFLICT_OVERWRITE, FileOperationWorker, renameFile
+from file_operations import (
+    CONFLICT_OVERWRITE,
+    FileOperationWorker,
+    explainFileError,
+    renameFile,
+)
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -66,6 +71,41 @@ class TestFileOperationGuards(unittest.TestCase):
         self.assertTrue(messages[0][0], messages)
         self.assertEqual(open(source, encoding="utf-8").read(), "hello")
         self.assertEqual(open(copy_path, encoding="utf-8").read(), "hello")
+
+    def test_copy_keeps_file_when_timestamps_fail(self):
+        source = os.path.join(self.root, "note.txt")
+        dest_dir = os.path.join(self.root, "out")
+        os.makedirs(dest_dir)
+        _write(source, "hello")
+
+        with mock.patch(
+            "file_operations.shutil.copystat",
+            side_effect=OSError(1, "Incorrect function"),
+        ):
+            _worker, messages = _run(
+                FileOperationWorker.OPERATION_COPY, [source], dest_dir
+            )
+
+        dest = os.path.join(dest_dir, "note.txt")
+        self.assertTrue(messages[0][0], messages)
+        self.assertEqual(_read(dest), "hello")
+
+    def test_copy_errors_stay_on_one_line(self):
+        dest_dir = os.path.join(self.root, "out")
+        os.makedirs(dest_dir)
+        missing = [
+            os.path.join(self.root, "missing-a.txt"),
+            os.path.join(self.root, "missing-b.txt"),
+        ]
+        _worker, messages = _run(
+            FileOperationWorker.OPERATION_COPY, missing, dest_dir
+        )
+
+        text = messages[0][1]
+        self.assertFalse(messages[0][0], messages)
+        self.assertNotIn("\n", text)
+        self.assertTrue(text.startswith("Completed with errors:"))
+        self.assertIn("(and 1 more)", text)
 
     def test_move_into_same_folder_is_a_noop(self):
         folder = os.path.join(self.root, "docs")
@@ -277,6 +317,38 @@ class TestConflictAndRename(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertIn("file.txt", os.listdir(self.root))
         self.assertEqual(_read(new_path), "data")
+
+
+# ------------------------------------------------------------
+# Class: TestExplainFileError
+# Purpose: Known Windows and cloud failures get a plain sentence.
+# ------------------------------------------------------------
+class TestExplainFileError(unittest.TestCase):
+
+    def test_known_windows_codes(self):
+        self.assertIn(
+            "permission",
+            explainFileError("note.txt: [WinError 5] Access is denied").lower(),
+        )
+        self.assertIn(
+            "in use",
+            explainFileError("note.txt: [WinError 32] The process cannot access the file").lower(),
+        )
+        self.assertEqual(
+            explainFileError("note.txt: [WinError 112] There is not enough space"),
+            "The drive is full.",
+        )
+        self.assertEqual(
+            explainFileError("note.txt: [WinError 206] The filename or extension is too long"),
+            "The path is too long.",
+        )
+        self.assertIn(
+            "cloud",
+            explainFileError("note.txt: [WinError 395] The cloud operation was unsuccessful").lower(),
+        )
+
+    def test_unknown_error_has_no_extra_sentence(self):
+        self.assertEqual(explainFileError("note.txt: [WinError 1] Incorrect function"), "")
 
 
 if __name__ == "__main__":

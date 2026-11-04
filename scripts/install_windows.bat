@@ -3,7 +3,9 @@ setlocal EnableExtensions
 
 REM ------------------------------------------------------------
 REM Script: scripts/install_windows.bat
-REM Purpose: Create project .venv (Windows cmd), install requirements.
+REM Purpose: Create project .venv (Windows cmd), install requirements,
+REM          rebuild dist\TotalCommanderClone\TotalCommanderClone.exe,
+REM          and point the Start Menu and existing taskbar pins at it.
 REM          Double-click this file, or run it from Command Prompt.
 REM          It does not use PowerShell.
 REM ------------------------------------------------------------
@@ -84,5 +86,28 @@ if errorlevel 1 (
   echo [INFO] 7-Zip is already installed.
 )
 
-echo [INFO] Done. Start the app with: scripts\run.bat
+echo [INFO] Building the installed app. This updates the program the taskbar launches.
+call "%~dp0build.bat"
+if errorlevel 1 (
+  echo [ERROR] Build failed. The installed app was not updated.
+  exit /b 1
+)
+
+set "APP_EXE=%cd%\dist\TotalCommanderClone\TotalCommanderClone.exe"
+if not exist "%APP_EXE%" (
+  echo [ERROR] Build finished but the app was not found:
+  echo         %APP_EXE%
+  exit /b 1
+)
+
+echo [INFO] Updating Start Menu and existing taskbar shortcuts...
+cscript //nologo "%~dp0install_shortcut.vbs" "%APP_EXE%"
+if errorlevel 1 (
+  echo [ERROR] Could not update shortcuts.
+  exit /b 1
+)
+
+echo [INFO] Done.
+echo        Installed app: %APP_EXE%
+echo        Source run:    scripts\run.bat
 exit /b 0
