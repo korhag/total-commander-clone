@@ -20,9 +20,23 @@ Thumbs.db
 *.swp
 *.swo
 
-# App local config at repo root (dev). Live settings never belong in Git.
+# App local config at repo root (dev). These change while the app is
+# used and differ per computer, so they must never be committed.
 /state.json
+/state.json.tmp
+/state.json.corrupt*
 /settings.json
+/settings.json.tmp
+/settings.json.corrupt*
+/bookmarks.json
+/bookmarks.json.tmp
+/bookmarks.json.corrupt*
+/bookmarks.last-good.json
+/bookmarks.last-good.json.tmp
+/bookmarks.last-good.json.corrupt*
+/bookmarks.last.good.json
+/bookmarks.last.good.json.tmp
+/bookmarks.last.good.json.corrupt*
 .git-account.json
 .git-account.pat
 
