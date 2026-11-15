@@ -7,22 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Added a searchable command and shortcut list with command availability and scope.
+## [0.23.0] - 2026-11-15
 
-- Added Copy and Move route reviews, clearer conflict choices, and easier access to transfer progress.
+### Added
 
-- Added the Waypane app icon for Linux, Windows, and macOS.
+- **Address bar**: Click parent folders in the breadcrumb trail, including folders inside archives. Use **Ctrl+L** to type or paste a full path and **Alt+Down** to open the ancestor menu.
+- **Command search**: Open **Help → Commands and shortcuts…** or press **Ctrl+Shift+P** to find and run commands. Results show the shortcut, where the command applies, and why it’s unavailable when applicable.
+- **Copy and Move review**: See the item count and source and destination before starting, including an example path when copying or moving items while keeping their folder structure.
+- **Transfers**: Open queued and running operations from the toolbar or the progress row’s **Details** button. Reopen transfer history from **More** after the queue finishes.
+- **Column layout**: Use **Reset column layout** to restore the current tab’s default order, visibility, and automatic sizing.
 
-- Added clickable address breadcrumbs with an editable path and parent-folder menu.
+### Changed
 
-- Renamed the application to Waypane. Existing installations should rerun the platform installer to refresh launchers. On Windows, rerun `scripts/install_windows.bat` to update shortcuts from the old executable path.
+- **App name and icon**: Total Commander Clone is now **Waypane**, with a new app icon on Linux, macOS, and Windows. Rerun the platform installer to refresh existing launchers and shortcuts.
+- **Pane layout**: The active pane and keyboard focus are easier to see. Pane controls line up, the status bar gives more room to selection and operation messages, and collapsed sidebar buttons use distinct Bookmarks and Libraries icons.
+- **Commands and menus**: The top toolbar holds app-wide actions, the center strip shows transfer direction and availability, and the bottom bar carries the F-key commands. File context menus group related actions, and right-clicking blank space targets the current folder.
+- **Folder tabs**: Tabs prioritize the folder name, add a parent name when names collide, and give the selected tab more room.
+- **Filters and file lists**: Each pane shows one filter summary and one clear action. Empty, loading, failed, and filtered-out lists explain their state in the viewport.
+- **Transfer conflicts**: Conflict prompts show the incoming and existing paths beside **Replace**, **Keep both**, **Skip**, and **Cancel transfer**.
 
-- Clarified transfer direction and availability, disambiguated folder tabs, grouped file context menus, and added Reset column layout.
+### Fixed
 
-- Simplified the main toolbar and added compact filter summaries and file-list loading, empty, and error messages.
-
-- Clarified the active pane and keyboard focus, aligned pane controls, and standardized action labels.
-- Added a toolbar More menu, simplified status information, and improved icon accessibility and sidebar icons.
+- **File-list columns**: Enabled columns stay visible in narrow panes. Manual widths, locks, order, and visibility survive resizing and tab switches. Even distribution persists, and inline rename brings the Name column into view.
+- **Linux launcher**: The installer recognizes both legacy launcher filenames and backs up entries that belong to the current checkout. Run `bash scripts/install_linux.sh --launcher-only` to refresh the app-menu entry without reinstalling dependencies.
 
 ## [0.22.5] - 2026-11-04
 
