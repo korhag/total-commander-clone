@@ -11,7 +11,7 @@ Option Explicit
 Dim exePath, workDir, shell, fso
 
 If WScript.Arguments.Count < 1 Then
-    WScript.Echo "[ERROR] Missing path to TotalCommanderClone.exe."
+    WScript.Echo "[ERROR] Missing path to Waypane.exe."
     WScript.Quit 1
 End If
 
@@ -33,10 +33,17 @@ If Not fso.FolderExists(startMenu) Then
     WScript.Quit 1
 End If
 
-startLink = startMenu & "\Total Commander Clone.lnk"
+startLink = startMenu & "\Waypane.lnk"
 WriteLink startLink, exePath, workDir
 WScript.Echo "[INFO] Start Menu shortcut: " & startLink
 
+RetargetFolder startMenu, exePath, workDir
+Dim legacyLink, legacyShortcut
+legacyLink = startMenu & "\Total Commander Clone.lnk"
+If fso.FileExists(legacyLink) Then
+    Set legacyShortcut = shell.CreateShortcut(legacyLink)
+    If LCase(legacyShortcut.TargetPath) = LCase(exePath) Then fso.DeleteFile legacyLink
+End If
 RetargetFolder shell.ExpandEnvironmentStrings("%APPDATA%") & "\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar", exePath, workDir
 RetargetFolder shell.ExpandEnvironmentStrings("%USERPROFILE%") & "\Desktop", exePath, workDir
 
@@ -49,7 +56,7 @@ Sub WriteLink(linkPath, target, workDir)
     link.TargetPath = target
     link.WorkingDirectory = workDir
     link.WindowStyle = 1
-    link.Description = "Total Commander Clone"
+    link.Description = "Waypane"
     link.IconLocation = target & ",0"
     link.Save
 End Sub
@@ -77,7 +84,7 @@ Sub RetargetFolder(folderPath, target, workDir)
                     targetName = LCase(fso.GetFileName(link.TargetPath))
                 End If
             End If
-            If Err.Number = 0 And targetName = "totalcommanderclone.exe" Then
+            If Err.Number = 0 And (LCase(link.TargetPath) = LCase(fso.BuildPath(fso.GetParentFolderName(workDir), "TotalCommanderClone\TotalCommanderClone.exe")) Or LCase(link.TargetPath) = LCase(target)) Then
                 If LCase(link.TargetPath) <> LCase(target) _
                     Or LCase(link.WorkingDirectory) <> LCase(workDir) _
                     Or LCase(link.IconLocation) <> LCase(target & ",0") Then

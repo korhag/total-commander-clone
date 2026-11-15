@@ -218,17 +218,17 @@ class TestPanelTabs(unittest.TestCase):
             for action in self.tabs.tabContextMenu(0).actions()
             if action.text()
         ]
-        self.assertIn("Open in Explorer", titles)
+        self.assertIn("Open in file manager", titles)
         self.assertIn("Open in Terminal", titles)
         for action in self.tabs.tabContextMenu(0).actions():
-            if action.text() in ("Open in Explorer", "Open in Terminal"):
+            if action.text() in ("Open in file manager", "Open in Terminal"):
                 self.assertTrue(action.isEnabled())
         empty_titles = [
             action.text()
             for action in self.tabs.tabContextMenu(-1).actions()
             if action.text()
         ]
-        self.assertNotIn("Open in Explorer", empty_titles)
+        self.assertNotIn("Open in file manager", empty_titles)
         self.assertNotIn("Open in Terminal", empty_titles)
 
 
@@ -286,3 +286,43 @@ class TestPanelTabsInWindow(unittest.TestCase):
         self.assertEqual(self.window._right_tabs.count(), 2)
         self.assertEqual(self.window._left_tabs.count(), 1)
         self.assertIs(self.window._active_panel, right)
+
+class TestPaneUiRegressions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = SettingsManager(self.tmp.name, enable_backup=False)
+        self.settings.setSetting("check_for_updates_on_startup", False)
+        self.settings.setSetting("cache_recursive_scans", False)
+        self.window = FileManagerApp(self.settings)
+        self.window.resize(946, 700)
+        self.window.show()
+        QTest.qWait(250)
+
+    def tearDown(self):
+        self.window.close()
+        self.window.deleteLater()
+        QTest.qWait(0)
+        self.tmp.cleanup()
+
+    def test_clicking_current_tab_activates_its_pane(self):
+        tabs = self.window._right_tabs
+        QTest.mouseClick(tabs, Qt.LeftButton, pos=tabs.tabRect(0).center())
+        self.assertIs(self.window._active_panel, self.window._right_panel)
+        self.assertTrue(tabs.property("paneActive"))
+        self.assertFalse(self.window._left_tabs.property("paneActive"))
+
+    def test_toolbar_primary_actions_survive_resize(self):
+        for width in (640, 946, 1400):
+            self.window.resize(width, 700)
+            QTest.qWait(50)
+            self.assertTrue(self.window._toolbar_more.isVisible())
+            for action in (self.window._tb_refresh, self.window._tb_settings):
+                self.assertTrue(self.window._toolbar.widgetForAction(action).isVisible())
+            self.assertEqual([a.text() for a in self.window._toolbar_more_menu.actions()],
+                             ["Bookmark folder", "Batch rename…", "Open in file manager", "Transfers"])
+
+
+    def test_status_timeout_restores_selection(self):
+        self.window._showStatus("Temporary", timeout=50)
+        QTest.qWait(100)
+        self.assertEqual(self.window._status_info.toolTip(), "Ready")

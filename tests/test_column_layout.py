@@ -108,3 +108,73 @@ class TestColumnLayout(unittest.TestCase):
             self.panel.columnOrder(),
             ["name", "size", "type", "date_modified"],
         )
+
+class TestColumnRegressions(unittest.TestCase):
+    def setUp(self):
+        from PyQt5.QtWidgets import QWidget, QHBoxLayout
+        self.host = QWidget()
+        layout = QHBoxLayout(self.host)
+        self.panel = FilePanel('left')
+        layout.addWidget(self.panel)
+        self.host.resize(440, 420)
+        self.host.show()
+        _settle(self.panel)
+
+    def tearDown(self):
+        self.host.close()
+        self.host.deleteLater()
+        QTest.qWait(0)
+
+    def test_narrow_columns_and_visibility_geometry(self):
+        table = self.panel._table
+        self.assertTrue(all(not table.isColumnHidden(c) for c in range(4)))
+        self.assertEqual(table.horizontalScrollBar().maximum(), 0)
+        self.panel.applyColumnVisibility({'type': False, 'date_modified': False})
+        _settle(self.panel)
+        self.assertEqual(table.horizontalHeader().length(), sum(table.columnWidth(c) for c in range(4)))
+        self.assertFalse(self.panel._user_sized_columns)
+        self.assertEqual(table.horizontalScrollBar().maximum(), 0)
+
+    def test_manual_width_recovers_and_lock_stays_fixed(self):
+        self.host.resize(1200, 420)
+        _settle(self.panel)
+        table = self.panel._table
+        table.setColumnWidth(1, 450)
+        self.panel._setColumnWidthLock(1, True)
+        self.host.resize(440, 420)
+        _settle(self.panel)
+        self.assertEqual(table.columnWidth(1), 450)
+        self.host.resize(1200, 420)
+        _settle(self.panel)
+        self.assertEqual(table.columnWidth(1), 450)
+        self.panel._setColumnWidthLock(1, False)
+        self.assertEqual(table.columnWidth(1), 450)
+
+    def test_distribute_and_state_restore(self):
+        self.host.resize(1200, 420)
+        _settle(self.panel)
+        self.panel._distributeColumnsEvenly()
+        table = self.panel._table
+        widths = [table.columnWidth(c) for c in range(4)]
+        self.assertLessEqual(max(widths) - min(widths), 1)
+        self.panel.applyColumnVisibility({'type': False})
+        state = self.panel.getHistoryData()
+        self.panel.restoreHistoryData({})
+        self.assertTrue(self.panel.getColumnVisibility()['type'])
+        self.panel.restoreHistoryData(state)
+        self.assertFalse(self.panel.getColumnVisibility()['type'])
+        self.assertIn('type', self.panel.getColumnWidths())
+        self.panel.restoreHistoryData({'column_widths': ['broken'], 'column_visibility': 'bad'})
+        self.assertTrue(all(self.panel.getColumnVisibility().values()))
+
+    def test_reset_layout_clears_widths_and_visibility(self):
+        table = self.panel._table
+        table.setColumnWidth(1, 300)
+        self.panel._setColumnWidthLock(1, True)
+        self.panel.applyColumnVisibility({'type': False})
+        self.panel._table.horizontalHeader().moveSection(3, 1)
+        self.panel.resetColumnLayout()
+        self.assertTrue(all(self.panel.getColumnVisibility().values()))
+        self.assertFalse(any(self.panel.getColumnWidthLockState()['column_width_locked'].values()))
+        self.assertEqual(self.panel.getColumnWidths(), {})
+        self.assertEqual(self.panel.columnOrder(), list(self.panel.COLUMN_VISIBILITY_KEYS))

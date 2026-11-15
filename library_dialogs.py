@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Library Dialogs
+Waypane - Library Dialogs
 Dialogs for adding a root and editing fields on one or more folders.
 """
 

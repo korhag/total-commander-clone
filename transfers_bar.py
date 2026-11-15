@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Transfers Bar
+Waypane - Transfers Bar
 Compact bottom row for active file transfers and a modeless details popup.
 Closing the popup does not cancel operations.
 """
@@ -80,6 +80,10 @@ class TransfersBar(QFrame):
         self._progress.setTextVisible(False)
         layout.addWidget(self._progress)
 
+        self._details_btn = QPushButton("Details")
+        self._details_btn.clicked.connect(self.detailsRequested.emit)
+        layout.addWidget(self._details_btn)
+
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setObjectName("transfersCancel")
         self._cancel_btn.setFocusPolicy(Qt.NoFocus)
@@ -99,7 +103,7 @@ class TransfersBar(QFrame):
 
         self.setVisible(True)
         if active:
-            verb = _operationVerb(active)
+            verb = "Waiting for a decision" if active.waiting_for_decision else _operationVerb(active)
             name = active.current_file or "…"
             detail = active.detail or ""
             extra = f"  ·  +{pending} waiting" if pending else ""
@@ -167,7 +171,8 @@ class _TaskRowWidget(QFrame):
 
     def updateTask(self, task: FileOperationTask):
         self._summary.setText(task.summaryLabel())
-        self._status.setText(_statusText(task.status))
+        self._status.setText("Waiting for a decision" if task.waiting_for_decision else _statusText(task.status))
+        self._summary.setToolTip("\n".join(task.source_paths) + "\n→ " + task.destination)
         can_cancel = task.status in (STATUS_PENDING, STATUS_RUNNING)
         self._cancel_btn.setVisible(can_cancel)
         self._cancel_btn.setEnabled(can_cancel)
@@ -240,7 +245,7 @@ class TransfersDetailsDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
 
-        for task in self._queue.tasks():
+        for task in self._orderedTasks():
             row = _TaskRowWidget(task, self._list_container)
             row.cancelRequested.connect(self._queue.cancelTask)
             self._rows[task.id] = row
@@ -253,22 +258,38 @@ class TransfersDetailsDialog(QDialog):
             )
         )
 
+    def _orderedTasks(self):
+        rank = {STATUS_RUNNING: 0, STATUS_PENDING: 1}
+        return sorted(self._queue.tasks(), key=lambda task: rank.get(task.status, 2))
+
+    def _reorderRows(self):
+        for index, task in enumerate(self._orderedTasks()):
+            row = self._rows.get(task.id)
+            if row:
+                self._list_layout.removeWidget(row)
+                self._list_layout.insertWidget(index, row)
+        self._clear_btn.setEnabled(any(
+            t.status in (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED)
+            for t in self._queue.tasks()))
+
     def onTaskAdded(self, task):
         row = _TaskRowWidget(task, self._list_container)
         row.cancelRequested.connect(self._queue.cancelTask)
         self._rows[task.id] = row
         self._list_layout.insertWidget(self._list_layout.count() - 1, row)
-        self._clear_btn.setEnabled(True)
+        self._reorderRows()
 
     def onTaskUpdated(self, task):
         row = self._rows.get(task.id)
         if row:
             row.updateTask(task)
+        self._reorderRows()
 
     def onTaskFinished(self, task, success, message):
         row = self._rows.get(task.id)
         if row:
             row.updateTask(task)
+        self._reorderRows()
 
     def _onClearCompleted(self):
         self._queue.clearCompleted()

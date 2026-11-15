@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Libraries Panel
+Waypane - Libraries Panel
 Sidebar for the active library: roots, field filters, and matching folders.
 """
 

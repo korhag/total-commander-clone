@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Folder tabs for one file panel
+Waypane - Folder tabs for one file panel
 
 One file panel stays on each side. Each tab stores the dictionary
 from FilePanel.getHistoryData(). Switching tabs saves the panel you
@@ -77,6 +77,7 @@ class _TabCloseButton(QToolButton):
         self._tab_bar = tab_bar
         self.setObjectName("panelTabCloseButton")
         self.setText("\u00d7")
+        self.setAccessibleName("Close tab")
         self.setToolTip("Close tab")
         self.setAutoRaise(True)
         self.setFocusPolicy(Qt.NoFocus)
@@ -94,6 +95,7 @@ class PanelTabBar(QTabBar):
 
     # Emitted after a tab switch has loaded that tab's folder.
     tabDisplayed = pyqtSignal()
+    tabInteracted = pyqtSignal()
     # The window opens the tab, so the panel it belongs to becomes active.
     newTabRequested = pyqtSignal()
     # Right-click a tab: open that tab's folder outside the app.
@@ -111,7 +113,7 @@ class PanelTabBar(QTabBar):
         self.setDocumentMode(True)
         self.setExpanding(False)
         self.setUsesScrollButtons(True)
-        self.setElideMode(Qt.ElideMiddle)
+        self.setElideMode(Qt.ElideRight)
         self.setDrawBase(True)
         self.setTabsClosable(False)
 
@@ -136,8 +138,8 @@ class PanelTabBar(QTabBar):
         panel = getattr(self, "_panel", None)
         if panel is not None:
             scale = float(getattr(panel, "_layout_scale", 1.0) or 1.0)
-        min_w = scaled(PANEL_TAB_MIN_WIDTH, scale)
-        max_w = scaled(PANEL_TAB_MAX_WIDTH, scale)
+        min_w = scaled(96 if index == self.currentIndex() else PANEL_TAB_MIN_WIDTH, scale)
+        max_w = scaled(220 if index == self.currentIndex() else PANEL_TAB_MAX_WIDTH, scale)
         hint.setWidth(max(min_w, min(int(hint.width()), max_w)))
         return hint
 
@@ -206,6 +208,7 @@ class PanelTabBar(QTabBar):
             self._guard = False
 
         self._syncCloseButtons()
+        self._updateLabels()
         if closing_current:
             self._restoreCurrent()
         return True
@@ -305,6 +308,11 @@ class PanelTabBar(QTabBar):
         self._syncCloseButtons()
         self._restoreCurrent()
 
+    def mousePressEvent(self, event):
+        if self.tabAt(event.pos()) >= 0:
+            self.tabInteracted.emit()
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MiddleButton:
             index = self.tabAt(event.pos())
@@ -372,10 +380,10 @@ class PanelTabBar(QTabBar):
         if index >= 0:
             menu.addSeparator()
             folder = self.folderForTab(index)
-            explorer_action = menu.addAction("Open in Explorer")
+            explorer_action = menu.addAction("Open in file manager")
             explorer_action.setData("explorer")
             explorer_action.setToolTip(
-                "Open in Explorer\n\n"
+                "Open in file manager\n\n"
                 "Open this tab's folder in the system file manager."
             )
             explorer_action.setEnabled(bool(folder))
@@ -428,6 +436,7 @@ class PanelTabBar(QTabBar):
         finally:
             self._guard = False
         self._syncCloseButtons()
+        self._updateLabels()
         if self.currentIndex() != index:
             self.setCurrentIndex(index)
             return
@@ -467,8 +476,7 @@ class PanelTabBar(QTabBar):
             path = ""
             if isinstance(state, dict):
                 path = state.get("current_path") or ""
-            if isinstance(path, str) and isNavigablePath(path):
-                self._panel.restoreHistoryData(state)
+            self._panel.restoreHistoryData(state if isinstance(state, dict) else {})
         finally:
             self._guard = False
         shown = self._panel.currentPath() or ""
@@ -476,12 +484,29 @@ class PanelTabBar(QTabBar):
         self.tabDisplayed.emit()
 
     def _applyLabel(self, index, path):
-        if not (0 <= index < self.count()):
-            return
-        if not isinstance(path, str):
-            path = ""
-        self.setTabText(index, _folderLabel(path))
-        self.setTabToolTip(index, path)
+        self._updateLabels()
+
+    def _updateLabels(self):
+        paths = []
+        for index in range(self.count()):
+            state = self._states[index] if index < len(self._states) else {}
+            path = self._panel.currentPath() if index == self._current else state.get("current_path", "")
+            paths.append(path if isinstance(path, str) else "")
+        names = [_folderLabel(path) for path in paths]
+        labels = []
+        for index, name in enumerate(names):
+            if names.count(name) > 1:
+                parent = os.path.basename(os.path.dirname(os.path.normpath(paths[index])))
+                name = f"{name} · {parent or os.path.dirname(paths[index])}"
+            labels.append(name)
+        for index, label in enumerate(labels):
+            if labels.count(label) > 1:
+                ordinal = labels[:index + 1].count(label)
+                label = f"{label} ({ordinal})"
+            self.setTabText(index, label)
+            self.setTabToolTip(index, paths[index])
+            self.setAccessibleTabName(index, label)
+        self.updateGeometry()
 
     def _closeFromButton(self, button):
         for index in range(self.count()):

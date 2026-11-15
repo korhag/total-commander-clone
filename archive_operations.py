@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Archive extract and compress workers
+Waypane - Archive extract and compress workers
 
 Both run on the file-operation queue. Extract pulls members out
 with 7-Zip into a hidden staging folder, then moves them with the

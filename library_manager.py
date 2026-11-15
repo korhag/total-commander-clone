@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Library Manager
+Waypane - Library Manager
 Handles libraries, their roots, named fields, and the folder values
 used to filter the active library. A hidden marker in each root lets
 the same folder be found again when a drive letter or mount point changes.

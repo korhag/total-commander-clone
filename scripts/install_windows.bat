@@ -4,7 +4,7 @@ setlocal EnableExtensions
 REM ------------------------------------------------------------
 REM Script: scripts/install_windows.bat
 REM Purpose: Create project .venv (Windows cmd), install requirements,
-REM          rebuild dist\TotalCommanderClone\TotalCommanderClone.exe,
+REM          rebuild dist\Waypane\Waypane.exe,
 REM          and point the Start Menu and existing taskbar pins at it.
 REM          Double-click this file, or run it from Command Prompt.
 REM          It does not use PowerShell.
@@ -93,7 +93,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "APP_EXE=%cd%\dist\TotalCommanderClone\TotalCommanderClone.exe"
+set "APP_EXE=%cd%\dist\Waypane\Waypane.exe"
 if not exist "%APP_EXE%" (
   echo [ERROR] Build finished but the app was not found:
   echo         %APP_EXE%

@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Small theme list with a live preview.
+Waypane - Small theme list with a live preview.
 
 Five names are visible. A click applies that theme. Holding the
 original-theme button shows it again until the button is released.

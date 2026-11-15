@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Shared dialog helpers
+Waypane - Shared dialog helpers
 Small prompts used by more than one panel.
 """
 

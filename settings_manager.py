@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Settings Manager
+Waypane - Settings Manager
 Handles loading and saving of settings.json, state.json, and bookmarks.json.
 Auto-creates config files with sensible defaults on first run.
 Also writes latest per-computer backups under the local user-data
@@ -694,7 +694,7 @@ class SettingsManager:
 
         if not isinstance(settings, dict) and not isinstance(state, dict):
             raise ValueError(
-                "Unrecognized profile file. Expected a Total Commander Clone "
+                "Unrecognized profile file. Expected a Waypane "
                 "export with 'settings' and/or 'state'."
             )
 

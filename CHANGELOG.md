@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Placeholder for upcoming changes. When you ship, add a dated section below and bump `APP_VERSION` in `app_version.py`.
+- Added a searchable command and shortcut list with command availability and scope.
+
+- Added Copy and Move route reviews, clearer conflict choices, and easier access to transfer progress.
+
+- Added the Waypane app icon for Linux, Windows, and macOS.
+
+- Added clickable address breadcrumbs with an editable path and parent-folder menu.
+
+- Renamed the application to Waypane. Existing installations should rerun the platform installer to refresh launchers. On Windows, rerun `scripts/install_windows.bat` to update shortcuts from the old executable path.
+
+- Clarified transfer direction and availability, disambiguated folder tabs, grouped file context menus, and added Reset column layout.
+
+- Simplified the main toolbar and added compact filter summaries and file-list loading, empty, and error messages.
+
+- Clarified the active pane and keyboard focus, aligned pane controls, and standardized action labels.
+- Added a toolbar More menu, simplified status information, and improved icon accessibility and sidebar icons.
 
 ## [0.22.5] - 2026-11-04
 

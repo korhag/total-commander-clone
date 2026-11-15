@@ -3,3 +3,4 @@ send2trash>=1.8.0
 
 # Build-time only (for scripts/build.bat)
 pyinstaller>=6.0.0
+pillow>=10.0.0

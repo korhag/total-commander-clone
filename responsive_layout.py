@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Width tiers for a narrow window.
+Waypane - Width tiers for a narrow window.
 
 Cut-offs are in pixels at layout scale 1. Callers multiply by the
 scale from theme.getUiMetrics so font size and density stay in step.

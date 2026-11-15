@@ -118,8 +118,8 @@ class TestFilePanelResponsive(unittest.TestCase):
         self.assertEqual(self.panel.getColumnVisibility(), chosen)
         type_col = self.panel.COLUMN_VISIBILITY_KEYS.index("type")
         date_col = self.panel.COLUMN_VISIBILITY_KEYS.index("date_modified")
-        self.assertTrue(self.panel.tableView().isColumnHidden(type_col))
-        self.assertTrue(self.panel.tableView().isColumnHidden(date_col))
+        self.assertFalse(self.panel.tableView().isColumnHidden(type_col))
+        self.assertFalse(self.panel.tableView().isColumnHidden(date_col))
 
     def test_widening_restores_the_row_and_columns(self):
         self._setWidth(260)
@@ -155,14 +155,14 @@ class TestPanelTabWidth(unittest.TestCase):
     def test_tab_width_stays_between_the_limits(self):
         panel = FilePanel("left")
         bar = PanelTabBar(panel)
-        self.assertEqual(bar.elideMode(), Qt.ElideMiddle)
+        self.assertEqual(bar.elideMode(), Qt.ElideRight)
         bar.setTabText(0, "Kingdom of Saudi Arabia documents and photos")
         long_hint = bar.tabSizeHint(0)
-        self.assertEqual(long_hint.width(), scaled(PANEL_TAB_MAX_WIDTH))
+        self.assertEqual(long_hint.width(), scaled(220))
         bar.setTabText(0, "A")
         short_hint = bar.tabSizeHint(0)
-        self.assertGreaterEqual(short_hint.width(), scaled(PANEL_TAB_MIN_WIDTH))
-        self.assertLessEqual(short_hint.width(), scaled(PANEL_TAB_MAX_WIDTH))
+        self.assertGreaterEqual(short_hint.width(), scaled(96))
+        self.assertLessEqual(short_hint.width(), scaled(220))
         panel.deleteLater()
 
 

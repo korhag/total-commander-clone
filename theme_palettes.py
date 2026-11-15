@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Omarchy palette seeds
+Waypane - Omarchy palette seeds
 
 Bundled copies of the Omarchy themes that are not already hand-tuned in
 theme.py. Values come from each theme's colors.toml, or from alacritty.toml

@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Bookmarks Panel
+Waypane - Bookmarks Panel
 Resizable sidebar with bookmarks and groups: drag-drop reorder,
 create group on drop, context menu (edit/update/rename/delete), tooltips with full path.
 

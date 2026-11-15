@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Built-in file viewer
+Waypane - Built-in file viewer
 
 F3 opens a window that is not modal. Images are scaled, text is shown
 read-only, and anything else is a hex dump of the start of the file.

@@ -285,7 +285,8 @@ RUNCMD
 # next install picks up the version just installed.
 # ------------------------------------------------------------
 write_macos_app() {
-  local app="$HOME/Applications/Total Commander Clone.app"
+  local app="$HOME/Applications/Waypane.app"
+  local legacy="$HOME/Applications/Total Commander Clone.app"
   local macos="$app/Contents/MacOS"
   local py="$ROOT/.venv/bin/python"
   local version=""
@@ -304,11 +305,13 @@ EOF
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Total Commander Clone</string>
+  <string>Waypane</string>
   <key>CFBundleDisplayName</key>
-  <string>Total Commander Clone</string>
+  <string>Waypane</string>
   <key>CFBundleIdentifier</key>
-  <string>com.tcclone.fileexplorer</string>
+  <string>com.korhag.waypane</string>
+  <key>CFBundleIconFile</key>
+  <string>waypane</string>
   <key>CFBundleExecutable</key>
   <string>launcher</string>
   <key>CFBundlePackageType</key>
@@ -320,6 +323,25 @@ EOF
 </dict>
 </plist>
 EOF
+  local resources="$app/Contents/Resources"
+  mkdir -p "$resources"
+  if [[ -f "$ROOT/icons/branding/waypane.icns" ]]; then
+    cp "$ROOT/icons/branding/waypane.icns" "$resources/waypane.icns"
+  elif [[ -f "$ROOT/icons/branding/waypane.png" ]] && command -v iconutil >/dev/null && command -v sips >/dev/null; then
+    local iconset
+    iconset="$(mktemp -d)/waypane.iconset"
+    mkdir -p "$iconset"
+    local size
+    for size in 16 32 128 256 512; do
+      sips -z "$size" "$size" "$ROOT/icons/branding/waypane.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+      sips -z "$((size * 2))" "$((size * 2))" "$ROOT/icons/branding/waypane.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$iconset" -o "$resources/waypane.icns"
+    rm -rf "$(dirname "$iconset")"
+  fi
+  if [[ -f "$legacy/Contents/MacOS/launcher" ]] && grep -Fqx "exec \"$py\" \"$ROOT/main.py\"" "$legacy/Contents/MacOS/launcher"; then
+    rm -rf "$legacy"
+  fi
   info "Wrote $app"
 }
 
@@ -377,7 +399,7 @@ main() {
 
   info "Done."
   info "  Start from a terminal:  bash scripts/run.sh"
-  info "  Dock / Applications:    Total Commander Clone"
+  info "  Dock / Applications:    Waypane"
   info "  macOS Finder:           double-click scripts/RUN.command (if needed: chmod +x scripts/RUN.command)"
 }
 

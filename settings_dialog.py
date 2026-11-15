@@ -346,7 +346,7 @@ class SettingsDialog(QDialog):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export profile",
-            "total-commander-clone-profile.json",
+            "waypane-profile.json",
             "Profile JSON (*.json);;All files (*.*)",
         )
         if not path:

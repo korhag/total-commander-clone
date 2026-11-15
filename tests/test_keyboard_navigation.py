@@ -97,12 +97,14 @@ class TestKeyboardNavigation(unittest.TestCase):
         self._open(self._tmp)
         self.panel._table.setCurrentIndex(QModelIndex())
         self.panel._table.clearSelection()
+        self.panel.editPath()
         QTest.keyClick(self.panel._path_edit, Qt.Key_Down)
         QApplication.processEvents()
         self.assertEqual(self.panel._table.currentIndex().row(), 0)
 
     def test_enter_in_path_box_opens_that_folder(self):
         self._open(self._tmp)
+        self.panel.editPath()
         self.panel._path_edit.setText(self.child)
         self.panel._path_edit.setFocus()
         QTest.keyClick(self.panel._path_edit, Qt.Key_Return)
@@ -115,6 +117,7 @@ class TestKeyboardNavigation(unittest.TestCase):
     def test_enter_on_file_path_selects_that_file(self):
         file_path = os.path.join(self._tmp, "a.txt")
         self._open(self.child)
+        self.panel.editPath()
         self.panel._path_edit.setText(file_path)
         self.panel._path_edit.setFocus()
         QTest.keyClick(self.panel._path_edit, Qt.Key_Return)
@@ -137,6 +140,7 @@ class TestKeyboardNavigation(unittest.TestCase):
     def test_enter_on_missing_path_keeps_the_open_folder(self):
         self._open(self._tmp)
         missing = os.path.join(self._tmp, "no-such-folder")
+        self.panel.editPath()
         self.panel._path_edit.setText(missing)
         self.panel._path_edit.setFocus()
         QTest.keyClick(self.panel._path_edit, Qt.Key_Return)

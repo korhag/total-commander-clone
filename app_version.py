@@ -1,13 +1,13 @@
 """
-Total Commander Clone - Application version (single source of truth)
+Waypane - Application version (single source of truth)
 Bump APP_VERSION here and record changes in CHANGELOG.md for every release.
 """
 
 # ------------------------------------------------------------
 # Public constants
 # ------------------------------------------------------------
-APP_NAME = "Total Commander Clone"
-APP_VERSION = "0.22.5"
+APP_NAME = "Waypane"
+APP_VERSION = "0.23.0"
 
 
 def getWindowTitle():

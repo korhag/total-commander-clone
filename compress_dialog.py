@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Compress dialog
+Waypane - Compress dialog
 
 Asks for the archive name, format, compression level, an optional
 password, and which panel receives the new file. RAR is not offered:

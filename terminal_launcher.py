@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Open the default terminal in a folder.
+Waypane - Open the default terminal in a folder.
 
 Linux honors $TERMINAL, then the freedesktop launcher
 xdg-terminal-exec, then a short list of known terminals.

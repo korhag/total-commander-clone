@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Bookmark Dialogs
+Waypane - Bookmark Dialogs
 Small dialogs for editing bookmark name and path.
 """
 

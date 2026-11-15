@@ -1,5 +1,5 @@
 """
-Total Commander Clone - File Operations
+Waypane - File Operations
 Provides threaded copy, move, and delete operations with
 progress dialogs, conflict resolution (overwrite/cancel/keep both/skip),
 and proper error handling.
@@ -12,7 +12,7 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
-    QPushButton, QMessageBox, QApplication, QCheckBox, QGridLayout,
+    QPushButton, QMessageBox, QApplication, QCheckBox, QGridLayout, QWidget, QToolButton,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMutex, QWaitCondition
 
@@ -385,6 +385,7 @@ class ConflictDialog(QDialog):
             f"{op}: \"{name}\" already exists at the destination.\n"
             "Compare source and destination below, then choose what to do."
         )
+        intro.setTextFormat(Qt.PlainText)
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -392,8 +393,8 @@ class ConflictDialog(QDialog):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(6)
 
-        grid.addWidget(self._boldLabel("Source (incoming)"), 0, 1)
-        grid.addWidget(self._boldLabel("Destination (existing)"), 0, 2)
+        grid.addWidget(self._boldLabel("Incoming"), 0, 1)
+        grid.addWidget(self._boldLabel("Existing"), 0, 2)
 
         self._src_labels = {}
         self._dst_labels = {}
@@ -407,9 +408,11 @@ class ConflictDialog(QDialog):
         for row, (title, key) in enumerate(fields, start=1):
             grid.addWidget(QLabel(title), row, 0, Qt.AlignTop)
             left = QLabel()
+            left.setTextFormat(Qt.PlainText)
             left.setWordWrap(True)
             left.setTextInteractionFlags(Qt.TextSelectableByMouse)
             right = QLabel()
+            right.setTextFormat(Qt.PlainText)
             right.setWordWrap(True)
             right.setTextInteractionFlags(Qt.TextSelectableByMouse)
             grid.addWidget(left, row, 1, Qt.AlignTop)
@@ -423,34 +426,40 @@ class ConflictDialog(QDialog):
         self._diff_label.setWordWrap(True)
         layout.addWidget(self._diff_label)
 
-        self._chk_apply_all = QCheckBox("Do this for all remaining conflicts")
-        layout.addWidget(self._chk_apply_all)
-
+        self._options_toggle = QToolButton()
+        self._options_toggle.setText("More options")
+        self._options_toggle.setCheckable(True)
+        self._options_toggle.setArrowType(Qt.RightArrow)
+        self._options_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        layout.addWidget(self._options_toggle)
+        self._bulk_scope = QLabel("Applies to remaining conflicts in this transfer")
+        self._bulk_scope.setVisible(False)
+        layout.addWidget(self._bulk_scope)
+        options = QWidget()
+        options_layout = QVBoxLayout(options)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        self._chk_apply_all = QCheckBox("Apply to remaining conflicts in this transfer")
+        self._chk_apply_all.toggled.connect(self._bulk_scope.setVisible)
+        options_layout.addWidget(self._chk_apply_all)
+        explanation = QLabel("Matching compares total size and, for folders, file count.")
+        explanation.setWordWrap(True)
+        options_layout.addWidget(explanation)
         match_row = QHBoxLayout()
-        self._btn_overwrite_if_same = QPushButton("Overwrite all matching size+files")
-        self._btn_overwrite_if_same.setToolTip(
-            "If this conflict matches on total size and file count, overwrite it "
-            "and auto-overwrite later conflicts that also match. Non-matching "
-            "conflicts still prompt."
-        )
+        self._btn_overwrite_if_same = QPushButton("Replace matching items")
         self._btn_overwrite_if_same.clicked.connect(self._onOverwriteIfSame)
         match_row.addWidget(self._btn_overwrite_if_same)
-
-        self._btn_skip_if_same = QPushButton("Skip all matching size+files")
-        self._btn_skip_if_same.setToolTip(
-            "If this conflict matches on total size and file count, skip it "
-            "and auto-skip later conflicts that also match. Non-matching "
-            "conflicts still prompt."
-        )
+        self._btn_skip_if_same = QPushButton("Skip matching items")
         self._btn_skip_if_same.clicked.connect(self._onSkipIfSame)
         match_row.addWidget(self._btn_skip_if_same)
-        match_row.addStretch()
-        layout.addLayout(match_row)
+        options_layout.addLayout(match_row)
+        options.setVisible(False)
+        self._options_toggle.toggled.connect(options.setVisible)
+        layout.addWidget(options)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self._btn_overwrite = QPushButton("Overwrite")
+        self._btn_overwrite = QPushButton("Replace")
         self._btn_overwrite.setToolTip(
             "Replace the destination with the source."
         )
@@ -471,7 +480,7 @@ class ConflictDialog(QDialog):
         self._btn_skip.clicked.connect(self._onSkip)
         btn_layout.addWidget(self._btn_skip)
 
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton("Cancel transfer")
         self._btn_cancel.setToolTip("Abort the entire copy/move operation.")
         self._btn_cancel.clicked.connect(self._onCancel)
         btn_layout.addWidget(self._btn_cancel)
@@ -662,7 +671,7 @@ class ConflictDialog(QDialog):
 
     def _updateMatchButtons(self):
         state = self._currentMatchState()
-        ready = state is not None
+        ready = state is True
         self._btn_overwrite_if_same.setEnabled(ready)
         self._btn_skip_if_same.setEnabled(ready)
 
@@ -718,6 +727,10 @@ class ConflictDialog(QDialog):
             except Exception:
                 pass
         self._workers = []
+
+    def reject(self):
+        self._stopWorkers()
+        super().reject()
 
     def closeEvent(self, event):
         self._stopWorkers()

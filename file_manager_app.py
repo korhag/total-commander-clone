@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Main Application Window
+Waypane - Main Application Window
 Assembles the dual-pane layout, toolbar, menu bar, status bar,
 right-click context menus, keyboard shortcuts, and bookmarks.
 """
@@ -31,6 +31,8 @@ from recursive_scan_worker import retireThread, waitForThreads
 from file_operations import FileOperationWorker, explainFileError, renameFile
 from file_operation_queue import FileOperationQueue
 from transfers_bar import TransfersBar, TransfersDetailsDialog
+from command_dialog import CommandDialog
+from transfer_review_dialog import TransferReviewDialog
 from batch_rename_dialog import BatchRenameDialog
 from bookmarks_panel import BookmarksPanel
 from dialog_utils import askText
@@ -255,6 +257,25 @@ def sanitizeWindowGeometry(geo):
 #          right-click menus, drag-and-drop integration, and
 #          settings persistence.
 # ============================================================
+class ElidedStatusLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self._updateElision()
+
+    def setText(self, text):
+        self._full_text = text
+        self._updateElision()
+
+    def _updateElision(self):
+        text = self.fontMetrics().elidedText(self._full_text, Qt.ElideRight, max(0, self.width()))
+        super().setText(text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._updateElision()
+
+
 class FileManagerApp(QMainWindow):
 
     # --------------------------------------------------------
@@ -421,6 +442,7 @@ class FileManagerApp(QMainWindow):
         self._updateSidebarCollapse()
         self._applyCenterStripMode()
         self._applyBottomBarLabels()
+        self._applyToolbarAppearance()
 
     # --------------------------------------------------------
     # Method: _initWindow
@@ -453,7 +475,7 @@ class FileManagerApp(QMainWindow):
         # --- File Menu ---
         file_menu = menu_bar.addMenu("&File")
 
-        self._action_new_folder = QAction("New Folder\tF8", self)
+        self._action_new_folder = QAction("New folder\tF8", self)
         self._action_new_folder.setToolTip(
             "New folder\n\n"
             "Create a new folder in the active panel’s current directory. Shortcut: F8."
@@ -513,7 +535,7 @@ class FileManagerApp(QMainWindow):
         self._action_rename.triggered.connect(self._onRename)
         edit_menu.addAction(self._action_rename)
 
-        self._action_batch_rename = QAction("Batch Rename...\tCtrl+M", self)
+        self._action_batch_rename = QAction("Batch rename…\tCtrl+M", self)
         self._action_batch_rename.setToolTip(
             "Batch rename\n\n"
             "Rename multiple files using patterns and rules. Shortcut: Ctrl+M."
@@ -535,12 +557,15 @@ class FileManagerApp(QMainWindow):
         # --- View Menu ---
         view_menu = menu_bar.addMenu("&View")
 
-        self._action_refresh = QAction("Refresh (both panels)", self)
+        self._action_refresh = QAction("Refresh both panes", self)
         self._action_refresh.setToolTip(
             "Refresh both panels\n\nReload file listings in the left and right panels."
         )
         self._action_refresh.triggered.connect(self._onRefresh)
         view_menu.addAction(self._action_refresh)
+        self._action_refresh_pane = QAction("Refresh pane\tF5", self)
+        self._action_refresh_pane.triggered.connect(self._onRefreshActivePanel)
+        view_menu.addAction(self._action_refresh_pane)
 
         self._action_view_file = QAction("View\tF3", self)
         self._action_view_file.setToolTip(
@@ -698,6 +723,10 @@ class FileManagerApp(QMainWindow):
 
         # --- Help Menu ---
         help_menu = menu_bar.addMenu("&Help")
+        commands_action = QAction("Commands and shortcuts…", self)
+        commands_action.triggered.connect(self._showCommands)
+        help_menu.addAction(commands_action)
+        help_menu.addSeparator()
         self._action_check_updates = QAction("Check for Updates...", self)
         self._action_check_updates.setToolTip(
             "Check for updates\n\n"
@@ -734,81 +763,57 @@ class FileManagerApp(QMainWindow):
         self._toolbar.setMovable(False)
         self.addToolBar(self._toolbar)
         toolbar = self._toolbar
+        self._toolbar_more = QToolButton(toolbar)
+        self._toolbar_more.setText("⋯")
+        self._toolbar_more.setAccessibleName("More toolbar actions")
+        self._toolbar_more.setToolTip("More toolbar actions")
+        self._toolbar_more.setPopupMode(QToolButton.InstantPopup)
+        self._toolbar_more.setFocusPolicy(Qt.StrongFocus)
+        self._toolbar_more_menu = QMenu(self._toolbar_more)
+        self._toolbar_more.setMenu(self._toolbar_more_menu)
+        toolbar.addWidget(self._toolbar_more)
 
-        self._tb_copy = QAction("Copy (F6)", self)
-        self._tb_copy.setToolTip(
-            "Copy to other panel\n\n"
-            "Copy selected items to the opposite panel. Shortcut: F6."
-        )
-        self._tb_copy.triggered.connect(self._onCopyToOther)
-        toolbar.addAction(self._tb_copy)
-
-        self._tb_move = QAction("Move (F7)", self)
-        self._tb_move.setToolTip(
-            "Move to other panel\n\n"
-            "Move selected items to the opposite panel. Shortcut: F7."
-        )
-        self._tb_move.triggered.connect(self._onMoveToOther)
-        toolbar.addAction(self._tb_move)
-
-        self._tb_delete = QAction("Delete (F9)", self)
-        self._tb_delete.setToolTip(
-            "Delete\n\nDelete selected items. Shortcut: F9."
-        )
-        self._tb_delete.triggered.connect(self._onDelete)
-        toolbar.addAction(self._tb_delete)
-
-        toolbar.addSeparator()
-
-        self._tb_new_folder = QAction("New Folder (F8)", self)
-        self._tb_new_folder.setToolTip(
-            "New folder\n\nCreate a folder in the active panel. Shortcut: F8."
-        )
-        self._tb_new_folder.triggered.connect(self._onNewFolder)
-        toolbar.addAction(self._tb_new_folder)
-
-        self._tb_rename = QAction("Rename (F2)", self)
-        self._tb_rename.setToolTip(
-            "Rename\n\nRename the selected item. Shortcut: F2."
-        )
-        self._tb_rename.triggered.connect(self._onRename)
-        toolbar.addAction(self._tb_rename)
-
-        self._tb_batch_rename = QAction("Batch Rename", self)
+        self._tb_batch_rename = QAction("Batch rename…", self)
         self._tb_batch_rename.setToolTip(
             "Batch rename\n\n"
             "Rename multiple files in the current folder. Shortcut: Ctrl+M."
         )
         self._tb_batch_rename.triggered.connect(self._onBatchRename)
-        toolbar.addAction(self._tb_batch_rename)
+        self._toolbar_more_menu.addAction(self._tb_batch_rename)
 
-        toolbar.addSeparator()
-
-        self._tb_bookmark = QAction("Bookmark", self)
+        self._tb_bookmark = QAction("Bookmark folder", self)
         self._tb_bookmark.setToolTip(
             "Bookmark folder\n\n"
             "Save the active panel’s path as a bookmark. Shortcut: Ctrl+Shift+B."
         )
         self._tb_bookmark.triggered.connect(self._onAddBookmark)
-        toolbar.addAction(self._tb_bookmark)
+        self._toolbar_more_menu.insertAction(self._tb_batch_rename, self._tb_bookmark)
 
-        self._tb_open_explorer = QAction("Explorer", self)
+        self._tb_open_explorer = QAction("Open in file manager", self)
         self._tb_open_explorer.setToolTip(
-            "Open in Explorer\n\n"
+            "Open in file manager\n\n"
             "Open the active panel’s folder in the system file manager."
         )
         self._tb_open_explorer.triggered.connect(self._onOpenActivePathInExplorer)
-        toolbar.addAction(self._tb_open_explorer)
+        self._toolbar_more_menu.addAction(self._tb_open_explorer)
 
-        self._tb_refresh = QAction("Refresh", self)
+        self._tb_transfers = QAction("Transfers", self)
+        self._tb_transfers.setIcon(self.style().standardIcon(self.style().SP_FileDialogDetailedView))
+        self._tb_transfers.triggered.connect(self._showTransfersDetails)
+        toolbar.addAction(self._tb_transfers)
+        self._tb_transfers.setVisible(False)
+        # A separate menu action remains visible when the toolbar action is hidden.
+        self._more_transfers = QAction("Transfers", self)
+        self._more_transfers.triggered.connect(self._showTransfersDetails)
+        self._toolbar_more_menu.addAction(self._more_transfers)
+
+        self._tb_refresh = QAction("Refresh both panes", self)
         self._tb_refresh.setToolTip(
             "Refresh both panels\n\n"
             "Reload both panels. F5 refreshes only the active panel."
         )
         self._tb_refresh.triggered.connect(self._onRefresh)
         toolbar.addAction(self._tb_refresh)
-
-        toolbar.addSeparator()
 
         self._tb_settings = QAction("Settings", self)
         self._tb_settings.setToolTip(
@@ -859,7 +864,12 @@ class FileManagerApp(QMainWindow):
         style_id = normalizeToolbarButtonStyle(
             self._settings.getSetting("toolbar_button_style", DEFAULT_TOOLBAR_BUTTON_STYLE)
         )
-        self._toolbar.setToolButtonStyle(TOOLBAR_BUTTON_STYLES[style_id])
+        style = TOOLBAR_BUTTON_STYLES[style_id]
+        self._toolbar.setToolButtonStyle(style)
+        buttons = [self._toolbar.widgetForAction(action) for action in self._toolbar.actions()]
+        required = sum(button.sizeHint().width() for button in buttons if button is not None)
+        if self.width() > 1 and required + 24 > self.width():
+            self._toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
     # --------------------------------------------------------
     # Method: createPopupMenu
@@ -960,6 +970,15 @@ class FileManagerApp(QMainWindow):
             metrics["center_panel_width"],
             metrics["center_button_size"] + 8,
         )
+        expanded = self.width() - (self._main_splitter.sizes()[0] if hasattr(self, "_main_splitter") else 0) >= 1100 * metrics["layout_scale"]
+        for button in (self._btn_copy_dir, self._btn_move_dir):
+            if expanded:
+                button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                button.setFixedWidth(max(button.sizeHint().width(), metrics["center_button_size"]))
+            else:
+                button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        if expanded:
+            width = max(width, self._btn_copy_dir.width() + 8, self._btn_move_dir.width() + 8)
         self._center_buttons.setFixedWidth(width)
 
     # --------------------------------------------------------
@@ -1241,6 +1260,8 @@ class FileManagerApp(QMainWindow):
 
         self._left_tabs = PanelTabBar(self._left_panel)
         self._right_tabs = PanelTabBar(self._right_panel)
+        self._left_tabs.tabInteracted.connect(lambda: self._setActivePanel(self._left_panel))
+        self._right_tabs.tabInteracted.connect(lambda: self._setActivePanel(self._right_panel))
         self._left_tabs.tabDisplayed.connect(
             lambda: self._showFilePanel("left")
         )
@@ -1374,8 +1395,14 @@ class FileManagerApp(QMainWindow):
         self._left_panel.folderCreated.connect(self._onFolderCreatedFromPanel)
         self._right_panel.folderCreated.connect(self._onFolderCreatedFromPanel)
 
-        self._left_panel.selectionChanged.connect(self._updateStatusBar)
-        self._right_panel.selectionChanged.connect(self._updateStatusBar)
+        self._left_panel.renameStateChanged.connect(self._updateActionAvailability)
+        self._right_panel.renameStateChanged.connect(self._updateActionAvailability)
+        self._left_panel.selectionChanged.connect(self._updateActionAvailability)
+        self._right_panel.selectionChanged.connect(self._updateActionAvailability)
+        self._left_panel.pathChanged.connect(self._updateActionAvailability)
+        self._right_panel.pathChanged.connect(self._updateActionAvailability)
+        self._left_panel.selectionChanged.connect(self._onStatusSelectionChanged)
+        self._right_panel.selectionChanged.connect(self._onStatusSelectionChanged)
         self._left_panel.listingFinished.connect(self._onPanelListingFinished)
         self._right_panel.listingFinished.connect(self._onPanelListingFinished)
         self._left_panel.pathChanged.connect(self._onActivePanelPathChanged)
@@ -1423,7 +1450,7 @@ class FileManagerApp(QMainWindow):
         tab_row = QWidget()
         tab_row.setObjectName("panelTabRow")
         row = QHBoxLayout(tab_row)
-        row.setContentsMargins(0, 0, 2, 0)
+        row.setContentsMargins(4, 0, 4, 0)
         row.setSpacing(0)
         # The bar itself fills the strip, so a double-click on the
         # empty part lands on PanelTabBar rather than a spacer.
@@ -1433,6 +1460,7 @@ class FileManagerApp(QMainWindow):
         add_button = QToolButton(tab_row)
         add_button.setObjectName("panelTabAddButton")
         add_button.setText("+")
+        add_button.setAccessibleName("New tab")
         add_button.setToolTip(
             "New tab (Ctrl+T)\n\n"
             "Open another tab on this panel's current folder."
@@ -1477,6 +1505,7 @@ class FileManagerApp(QMainWindow):
             self._left_stack.setCurrentWidget(self._left_panel)
         else:
             self._right_stack.setCurrentWidget(self._right_panel)
+        self._updateActionAvailability()
 
     def _savePanelTabs(self, side):
         tabs = self._left_tabs if side == "left" else self._right_tabs
@@ -1593,6 +1622,7 @@ class FileManagerApp(QMainWindow):
             "on the other panel: size, file counts, and modified time."
         )
         act_compare.triggered.connect(lambda: self._onCompareWithOtherPanel())
+        self._special_actions = (act_copy_struct, act_move_struct, act_rel_paths, act_full_paths, act_compare)
         self._btn_special.setMenu(special_menu)
         self._addCenterGroup(layout, self._btn_special)
 
@@ -1636,11 +1666,26 @@ class FileManagerApp(QMainWindow):
             arrow = "\u2190"
             flow = "Right \u2192 Left"
             other = "left"
+        verb = "Extract" if self._active_panel and self._active_panel.isInArchive() else "Copy"
         self._setCenterIcon(self._btn_copy_dir, "copy", arrow)
         self._setCenterIcon(self._btn_move_dir, "move", arrow)
+        from PyQt5.QtGui import QPainter, QPen, QColor, QIcon
+        for button in (self._btn_copy_dir, self._btn_move_dir):
+            pixmap = button.icon().pixmap(24, 24)
+            if not pixmap.isNull():
+                painter = QPainter(pixmap)
+                painter.setPen(QPen(QColor("#ffffff"), 2))
+                painter.drawText(pixmap.rect(), Qt.AlignBottom | Qt.AlignRight, arrow)
+                painter.end()
+                button.setIcon(QIcon(pixmap))
+        self._btn_copy_dir.setAccessibleName(f"{verb} to {other} pane")
+        self._btn_move_dir.setAccessibleName(f"Move to {other} pane")
+        self._btn_special.setAccessibleName("Special transfers")
+        self._btn_swap.setAccessibleName("Swap panes")
+        self._btn_mirror.setAccessibleName("Mirror panes")
         self._btn_copy_dir.setToolTip(
-            "Copy to other panel\n\n"
-            f"Copy selected items to the {other} panel. Flow: {flow}. Shortcut: F6."
+            f"{verb} to {other} pane\n\n"
+            f"{verb} selected items to the {other} panel. Flow: {flow}. Shortcut: F6."
         )
         self._btn_move_dir.setToolTip(
             "Move to other panel\n\n"
@@ -1655,6 +1700,9 @@ class FileManagerApp(QMainWindow):
             )
         self._setCenterIcon(self._btn_swap, "swap", "\u21C4")
         self._setCenterIcon(self._btn_mirror, "mirror", "\u21C9")
+        self._btn_copy_dir.setText(f"{verb} to {other} {arrow}")
+        self._btn_move_dir.setText(f"Move to {other} {arrow}")
+        self._applyCenterStripMode()
 
     # --------------------------------------------------------
     # Method: _setCenterIcon
@@ -1681,6 +1729,7 @@ class FileManagerApp(QMainWindow):
     #          bottom row and optional details popup.
     # --------------------------------------------------------
     def _initTransfers(self):
+        self._transfer_review = None
         self._transfer_queue = FileOperationQueue(self)
         self._transfer_queue.setParentWindow(self)
         self._transfers_details = None
@@ -1711,16 +1760,19 @@ class FileManagerApp(QMainWindow):
 
     def _onTransferTaskAdded(self, task):
         self._transfers_bar.updateFromQueue(self._transfer_queue)
+        self._tb_transfers.setVisible(self._transfer_queue.hasActiveWork())
         if self._transfers_details is not None and self._transfers_details.isVisible():
             self._transfers_details.onTaskAdded(task)
 
     def _onTransferTaskUpdated(self, task):
         self._transfers_bar.updateFromQueue(self._transfer_queue)
+        self._tb_transfers.setVisible(self._transfer_queue.hasActiveWork())
         if self._transfers_details is not None and self._transfers_details.isVisible():
             self._transfers_details.onTaskUpdated(task)
 
     def _onTransferTaskFinished(self, task, success, message):
         self._transfers_bar.updateFromQueue(self._transfer_queue)
+        self._tb_transfers.setVisible(self._transfer_queue.hasActiveWork())
         if self._transfers_details is not None and self._transfers_details.isVisible():
             self._transfers_details.onTaskFinished(task, success, message)
         if not success:
@@ -1771,6 +1823,7 @@ class FileManagerApp(QMainWindow):
 
     def _onTransferQueueIdle(self):
         self._transfers_bar.updateFromQueue(self._transfer_queue)
+        self._tb_transfers.setVisible(self._transfer_queue.hasActiveWork())
 
     def _clearClipboard(self):
         self._clipboard_paths = []
@@ -1810,9 +1863,9 @@ class FileManagerApp(QMainWindow):
                 "Edit\n\nOpen the selected file in the system editor. Shortcut: F4.",
             ),
             (
-                "F5 Refresh",
+                "F5 Refresh pane",
                 self._onRefreshActivePanel,
-                "Refresh\n\nReload the listing for the active panel only. Shortcut: F5.",
+                "Refresh pane\n\nReload the listing for the active pane. Shortcut: F5.",
             ),
             (
                 "F6 Copy",
@@ -1825,7 +1878,7 @@ class FileManagerApp(QMainWindow):
                 "Move\n\nMove selected items to the opposite panel. Shortcut: F7.",
             ),
             (
-                "F8 NewFolder",
+                "F8 New folder",
                 self._onNewFolder,
                 "New folder\n\nCreate a folder in the active panel. Shortcut: F8.",
             ),
@@ -1840,6 +1893,7 @@ class FileManagerApp(QMainWindow):
         for text, callback, tip in button_defs:
             btn = QPushButton(text)
             btn.setToolTip(tip)
+            btn.setAccessibleName(tip.split("\n", 1)[0])
             btn.clicked.connect(callback)
             btn.setFocusPolicy(Qt.NoFocus)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1848,6 +1902,7 @@ class FileManagerApp(QMainWindow):
             layout.addWidget(btn, 1)
 
         self.centralWidget().layout().addWidget(self._bottom_bar)
+        self._updateActionAvailability()
 
     # --------------------------------------------------------
     # Method: _initStatusBar
@@ -1855,60 +1910,145 @@ class FileManagerApp(QMainWindow):
     def _initStatusBar(self):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
-        self._status_info = QLabel("Ready")
+        self._status_info = ElidedStatusLabel("Ready")
         self._status_info.setObjectName("statusLabel")
+        self._status_info.setMinimumWidth(0)
+        self._status_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._status_bar.addWidget(self._status_info, 1)
 
         self._drive_space_label = QLabel("")
         self._drive_space_label.setObjectName("statusLabel")
         self._status_bar.addPermanentWidget(self._drive_space_label)
 
-        self._version_label = QLabel(f"v{APP_VERSION}")
-        self._version_label.setObjectName("statusLabel")
-        self._version_label.setToolTip(f"{APP_NAME} {APP_VERSION}")
-        self._status_bar.addPermanentWidget(self._version_label)
-
     # --------------------------------------------------------
     # Method: _initShortcuts
     # Purpose: Registers all keyboard shortcuts.
     # --------------------------------------------------------
     def _initShortcuts(self):
-        shortcuts = {
-            QKeySequence(Qt.Key_F2):                     self._onRename,
-            QKeySequence(Qt.Key_F3):                     self._onViewFile,
-            QKeySequence(Qt.Key_F4):                     self._onEditFile,
-            QKeySequence(Qt.Key_F5):                     self._onRefreshActivePanel,
-            QKeySequence(Qt.Key_F6):                     self._onCopyToOther,
-            QKeySequence(Qt.Key_F7):                     self._onMoveToOther,
-            QKeySequence(Qt.Key_F8):                     self._onNewFolder,
-            QKeySequence(Qt.Key_F9):                     self._onDelete,
-            QKeySequence(Qt.Key_Delete):                  self._onDelete,
-            QKeySequence(Qt.Key_Return):                  self._onEnterPressed,
-            QKeySequence(Qt.Key_Backspace):               self._onBackspace,
-            QKeySequence("Ctrl+L"):                       self._onFocusAddressBar,
-            QKeySequence(Qt.Key_Tab):                     self._onSwitchPanel,
-            QKeySequence("Ctrl+A"):                       self._onSelectAll,
-            QKeySequence("Ctrl+Shift+B"):                 self._onAddBookmark,
-            QKeySequence("Ctrl+X"):                       self._onCut,
-            QKeySequence("Ctrl+C"):                       self._onCopyToClipboard,
-            QKeySequence("Ctrl+V"):                       self._onPaste,
-            QKeySequence("Ctrl+M"):                       self._onBatchRename,
-            QKeySequence("Ctrl+Shift+S"):                 self._onSwapPanels,
-            QKeySequence("Ctrl+Shift+M"):                 self._onMirrorToOther,
-            QKeySequence("Ctrl+Q"):                       self._onToggleQuickView,
-            QKeySequence("Ctrl+T"):                       self._onNewTab,
-            QKeySequence("Ctrl+W"):                       self._onCloseTab,
-            QKeySequence("Ctrl+Tab"):                     self._onNextTab,
-            QKeySequence("Ctrl+Shift+Tab"):               self._onPreviousTab,
-            QKeySequence("Ctrl+,"):                       self._onOpenSettings,
-        }
+        # Each entry owns both its displayed shortcuts and its dispatch target.
+        specs = [
+            ("rename", "Rename", "Selection", self._onRename, ["F2"], []),
+            ("view", "View", "Active pane", self._onViewFile, ["F3"], []),
+            ("edit", "Edit", "Selection", self._onEditFile, ["F4"], []),
+            ("refresh", "Refresh pane", "Active pane", self._onRefreshActivePanel, ["F5"], []),
+            ("copy", "Copy to other pane", "Selection → other pane", self._onCopyToOther, ["F6"], []),
+            ("move", "Move to other pane", "Selection → other pane", self._onMoveToOther, ["F7"], []),
+            ("new", "New folder", "Active pane", self._onNewFolder, ["F8"], []),
+            ("delete", "Delete", "Selection", self._onDelete, ["F9", "Delete"], []),
+            ("open", "Open selected item", "Selection", self._openSelectedItem, ["Return"], []),
+            ("up", "Go to parent folder", "Active pane", self._onBackspace, ["Backspace"], []),
+            ("address", "Edit path", "Active pane", self._onFocusAddressBar, ["Ctrl+L"], []),
+            ("ancestors", "Show path ancestors", "Active pane", self._onBreadcrumbAncestors, ["Alt+Down"], []),
+            ("switch", "Switch pane", "Both panes", self._onSwitchPanel, ["Tab"], []),
+            ("select", "Select all", "Active pane", self._onSelectAll, ["Ctrl+A"], []),
+            ("bookmark", "Bookmark folder", "Active pane", self._onAddBookmark, ["Ctrl+Shift+B"], []),
+            ("cut", "Cut", "Selection", self._onCut, ["Ctrl+X"], []),
+            ("clipboard", "Copy to clipboard", "Selection", self._onCopyToClipboard, ["Ctrl+C"], []),
+            ("paste", "Paste", "Active pane", self._onPaste, ["Ctrl+V"], []),
+            ("batch", "Batch rename…", "Active pane", self._onBatchRename, ["Ctrl+M"], []),
+            ("swap", "Swap pane paths", "Both panes", self._onSwapPanels, ["Ctrl+Shift+S"], ["swap panes", "swap panels"]),
+            ("mirror", "Mirror panes", "Both panes", self._onMirrorToOther, ["Ctrl+Shift+M"], []),
+            ("quick", "Quick view", "Both panes", self._onToggleQuickView, ["Ctrl+Q"], []),
+            ("newtab", "New tab", "Active pane", self._onNewTab, ["Ctrl+T"], []),
+            ("closetab", "Close tab", "Active pane", self._onCloseTab, ["Ctrl+W"], []),
+            ("nexttab", "Next tab", "Active pane", self._onNextTab, ["Ctrl+Tab"], []),
+            ("prevtab", "Previous tab", "Active pane", self._onPreviousTab, ["Ctrl+Shift+Tab"], []),
+            ("settings", "Settings", "Application", self._onOpenSettings, ["Ctrl+,"], []),
+            ("commands", "Commands and shortcuts…", "Application", self._showCommands, ["Ctrl+Shift+P"], []),
+            ("sidebar", "Show sidebar", "Application", self._action_show_sidebar.trigger, [], []),
+            ("hidden", "Show hidden files", "Both panes", self._action_show_hidden.trigger, [], ["dotfiles"]),
+            ("refreshboth", "Refresh both panes", "Both panes", self._onRefresh, [], []),
+            ("fullpaths", "Copy full paths", "Selection", self._onSpecialCopyFullPaths, [], ["copy full path", "copy absolute path"]),
+            ("relpaths", "Copy relative paths", "Selection", self._onSpecialCopyRelativePaths, [], []),
+            ("folderpath", "Copy current folder path", "Active pane", lambda: self._active_panel._copyPathToClipboard(), [], []),
+            ("copystruct", "Copy keeping structure", "Selection → other pane", self._onSpecialCopyKeepStructure, [], []),
+            ("movestruct", "Move keeping structure", "Selection → other pane", self._onSpecialMoveKeepStructure, [], []),
+            ("compare", "Compare with other pane…", "Selection → other pane", self._onCompareWithOtherPanel, [], []),
+            ("filter", "Filter settings", "Active pane", lambda: self._active_panel._onOpenFilterOptions(), [], []),
+            ("clearfilter", "Clear filter", "Active pane", lambda: self._active_panel.clearFilter(), [], []),
+            ("columns", "Reset column layout", "Active pane", lambda: self._active_panel.resetColumnLayout(), [], []),
+            ("filemanager", "Open in file manager", "Active pane", self._onOpenActivePathInExplorer, [], []),
+            ("transfers", "Transfers", "Application", self._showTransfersDetails, [], []),
+            ("about", "About", "Application", self._onAbout, [], []),
+        ]
+        self._commands = []
+        for ident, name, scope, callback, keys, aliases in specs:
+            sequences = [QKeySequence(key) for key in keys]
+            command = dict(id=ident, name=lambda text=name: text, scope=scope,
+                           callback=callback, keys=sequences, aliases=aliases)
+            if ident == "copy":
+                command["name"] = self._copyCommandName
+                command["aliases"] = ["copy to other pane", "extract"]
+            if ident == "hidden":
+                command["checked"] = self._action_show_hidden.isChecked
+            if ident == "sidebar":
+                command["keys"] = [self._action_show_sidebar.shortcut()]
+            self._commands.append(command)
+            for sequence in sequences:
+                action = QAction(self)
+                action.setShortcut(sequence)
+                action.setShortcutContext(Qt.WindowShortcut)
+                action.triggered.connect(self._onEnterPressed if ident == "open" else callback)
+                self.addAction(action)
 
-        for key_seq, callback in shortcuts.items():
-            action = QAction(self)
-            action.setShortcut(key_seq)
-            action.setShortcutContext(Qt.WindowShortcut)
-            action.triggered.connect(callback)
-            self.addAction(action)
+    def _copyCommandName(self):
+        if self._active_panel and self._active_panel.isInArchive():
+            return "Extract to other pane"
+        return "Copy to other pane"
+
+    def _commandUnavailable(self, command):
+        ident = command["id"]
+        panel = self._active_panel
+        if command["scope"] == "Application":
+            return ""
+        if panel is None:
+            return "No active pane"
+        state = self._actionAvailability()
+        stack = self._left_stack if panel is self._left_panel else self._right_stack
+        if command["scope"] in ("Active pane", "Selection", "Selection → other pane") and stack.currentWidget() is not panel:
+            return "Switch back to the file pane"
+        key = {"copystruct": "copy", "movestruct": "move", "fullpaths": "paths",
+               "relpaths": "paths"}.get(ident, ident)
+        if ident in ("copystruct", "movestruct") and panel.isInArchive():
+            return "The archive is read-only"
+        if key in ("copy", "move") and splitArchivePath(self._getInactivePanel().currentPath() or ""):
+            return "The destination archive is read-only"
+        if key in state and not state[key]:
+            if key in ("rename", "compare"):
+                return "Select one item in a writable pane"
+            return "This command is unavailable for the current selection or pane"
+        if ident == "open" and len(panel.selectedEntries()) != 1:
+            return "Select one item"
+        if ident == "closetab" and self._tabsForActive().count() <= 1:
+            return "The last tab stays open"
+        if ident == "paste" and (panel.isInArchive() or not self._hasPasteSource()):
+            return "No files to paste into this pane"
+        if ident in ("cut", "clipboard") and not panel.selectedEntries():
+            return "Select an item"
+        if ident == "cut" and panel.isInArchive():
+            return "The archive is read-only"
+        if ident == "batch" and (panel.isInArchive() or not panel.proxyModel().rowCount()):
+            return "No items available to rename"
+        if ident == "clearfilter" and not panel._hasActiveFilter():
+            return "No active filter"
+        return ""
+
+    def _showCommands(self):
+        panel = self._active_panel
+        if panel is None or panel.isRenaming():
+            return
+        focus = QApplication.focusWidget()
+        dialog = CommandDialog(self._commands, self._commandUnavailable, self)
+        accepted = dialog.exec_() == QDialog.Accepted
+        command = dialog.chosen
+        self._setActivePanel(panel)
+        if focus and focus.isVisible() and focus.isEnabled():
+            focus.setFocus()
+        else:
+            panel.tableView().setFocus()
+        if accepted and command:
+            command["callback"]()
+        dialog.deleteLater()
 
     # --------------------------------------------------------
     # Method: _panelMovedSinceStartup
@@ -2008,10 +2148,51 @@ class FileManagerApp(QMainWindow):
             self._active_panel.setActive(False)
         self._active_panel = panel
         panel.setActive(True)
+        if getattr(self, "_status_message_persistent", False):
+            self._status_message_active = False
+            self._status_message_persistent = False
+        for tabs, pane in ((self._left_tabs, self._left_panel), (self._right_tabs, self._right_panel)):
+            tabs.setProperty("paneActive", pane is panel)
+            tabs.style().unpolish(tabs)
+            tabs.style().polish(tabs)
+            tabs.update()
         self._updateStatusBar()
         self._refreshDriveSpace()
         if hasattr(self, "_btn_copy_dir"):
             self._updateDirectionButtons()
+        self._updateActionAvailability()
+
+    def _actionAvailability(self):
+        panel = self._active_panel
+        if panel is None:
+            return dict.fromkeys(("copy", "move", "rename", "delete", "edit", "view", "new", "paths", "compare"), False)
+        stack = self._left_stack if panel is self._left_panel else self._right_stack
+        ready = stack.currentWidget() is panel and not panel.isRenaming()
+        entries = panel.selectedEntries()
+        archive = panel.isInArchive()
+        destination = self._getInactivePanel().currentPath()
+        destination_ok = bool(destination) and not splitArchivePath(destination)
+        copy = ready and bool(entries) and destination_ok
+        if archive:
+            copy = copy and bool(find7zExecutable())
+        return {"copy": copy, "move": copy and not archive,
+                "rename": ready and len(entries) == 1 and not archive,
+                "delete": ready and bool(entries) and not archive,
+                "edit": ready and any(not e["is_dir"] and not e.get("in_archive") for e in entries) and not archive,
+                "view": ready, "new": ready and not archive,
+                "paths": ready and bool(entries), "compare": ready and len(entries) == 1 and not archive}
+
+    def _updateActionAvailability(self, *args):
+        if not hasattr(self, "_bottom_button_specs") or not self._active_panel:
+            return
+        state = self._actionAvailability()
+        for button, key in zip((item[0] for item in self._bottom_button_specs),
+                               ("rename", "view", "edit", "view", "copy", "move", "new", "delete")):
+            button.setEnabled(state[key])
+        self._btn_copy_dir.setEnabled(state["copy"])
+        self._btn_move_dir.setEnabled(state["move"])
+        for action, key in zip(self._special_actions, ("copy", "move", "paths", "paths", "compare")):
+            action.setEnabled(state[key])
 
     def _getInactivePanel(self):
         if self._active_panel == self._left_panel:
@@ -2259,6 +2440,8 @@ class FileManagerApp(QMainWindow):
             self._showStatus("Archive is read-only.")
             return
 
+        if not self._reviewTransfer("Copy", paths, dest):
+            return
         self._transfer_queue.enqueueCopy(paths, dest)
         self._showStatus(f"Copy queued ({len(paths)} item(s)).")
 
@@ -2280,12 +2463,30 @@ class FileManagerApp(QMainWindow):
             self._showStatus("Archive is read-only.")
             return
 
+        if not self._reviewTransfer("Move", paths, dest):
+            return
         self._transfer_queue.enqueueMove(paths, dest)
         self._showStatus(f"Move queued ({len(paths)} item(s)).")
 
     # --------------------------------------------------------
     # Special transfers (keep structure relative to search root)
     # --------------------------------------------------------
+    def _reviewTransfer(self, operation, paths, destination, relative_paths=None, source=None):
+        if self._transfer_review is not None:
+            self._transfer_review.raise_()
+            return False
+        source = source if source is not None else self._active_panel.currentPath()
+        side = "Left" if self._active_panel is self._left_panel else "Right"
+        dialog = TransferReviewDialog(operation, list(paths), source, destination,
+                                      side, list(relative_paths) if relative_paths else None, self,
+                                      search_root=self._active_panel._source_model.isRecursive())
+        self._transfer_review = dialog
+        try:
+            return dialog.exec_() == QDialog.Accepted
+        finally:
+            self._transfer_review = None
+            dialog.deleteLater()
+
     def _prepareStructureTransfer(self, verb):
         """Return (paths, rels, dest) or (None, None, None) after UI feedback."""
         if not self._activePanelReady():
@@ -2309,21 +2510,7 @@ class FileManagerApp(QMainWindow):
         root = self._active_panel.currentPath() or ""
         paths = [s["full_path"] for s in specs]
         rels = [s["relative_path"] for s in specs]
-        sample = rels[0]
-        extra = f"\n… and {len(rels) - 1} more" if len(rels) > 1 else ""
-        reply = QMessageBox.question(
-            self,
-            f"{verb} keeping structure",
-            f"{verb} {len(paths)} item(s) to the other panel while keeping "
-            f"paths relative to:\n{root}\n\n"
-            f"Example:\n  {sample}\n"
-            f"  → {os.path.join(dest, sample)}{extra}\n\n"
-            "Only selected items are transferred; unmatched siblings are not copied.\n"
-            "Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if reply != QMessageBox.Yes:
+        if not self._reviewTransfer(verb, paths, dest, rels, root):
             return None, None, None
         return paths, rels, dest
 
@@ -2483,7 +2670,7 @@ class FileManagerApp(QMainWindow):
         self._active_panel.createNewFolder()
 
     # --------------------------------------------------------
-    # Batch Rename: Opens the multi-rename dialog.
+    # Batch rename…: Opens the multi-rename dialog.
     # If files are selected, operates on selection only.
     # Otherwise operates on the rows currently visible in the panel.
     # --------------------------------------------------------
@@ -2541,6 +2728,11 @@ class FileManagerApp(QMainWindow):
                 return
         if self._active_panel.isRenaming():
             self._active_panel.commitRename()
+            return
+        self._openSelectedItem()
+
+    def _openSelectedItem(self):
+        if not self._activePanelReady():
             return
         entries = self._active_panel.selectedEntries()
         if len(entries) == 1:
@@ -2624,6 +2816,7 @@ class FileManagerApp(QMainWindow):
                 self._left_stack.setCurrentWidget(self._left_panel)
             if right_on:
                 self._right_stack.setCurrentWidget(self._right_panel)
+            self._updateActionAvailability()
             self._showStatus("Quick view off.")
             return
 
@@ -2632,6 +2825,7 @@ class FileManagerApp(QMainWindow):
         viewer = self._left_quick_view if other is self._left_panel else self._right_quick_view
         stack.setCurrentWidget(viewer)
         self._refreshQuickView(self._active_panel)
+        self._updateActionAvailability()
         self._showStatus("Quick view on. Ctrl+Q hides it.")
 
     # --------------------------------------------------------
@@ -2722,8 +2916,11 @@ class FileManagerApp(QMainWindow):
 
     def _onFocusAddressBar(self):
         if self._active_panel:
-            self._active_panel.pathEdit().setFocus()
-            self._active_panel.pathEdit().selectAll()
+            self._active_panel.editPath()
+
+    def _onBreadcrumbAncestors(self):
+        if self._active_panel:
+            self._active_panel.showAncestorMenu()
 
     def _onSwitchPanel(self):
         if self._active_panel == self._left_panel:
@@ -2951,6 +3148,8 @@ class FileManagerApp(QMainWindow):
         accent_changed = applyThemeAccent()
         applyThemeIconColors()
         self._applyToolbarIcons()
+        if hasattr(self, "_sidebar_rail"):
+            self._sidebar_rail.refreshIcons()
         self._updateDirectionButtons()
         if hasattr(self, "_left_panel"):
             self._left_panel.applyActionIcons()
@@ -2972,11 +3171,6 @@ class FileManagerApp(QMainWindow):
 
         point_left = self._active_panel is self._right_panel
         mapping = (
-            (getattr(self, "_tb_copy", None), "copy", True),
-            (getattr(self, "_tb_move", None), "move", True),
-            (getattr(self, "_tb_delete", None), "delete", False),
-            (getattr(self, "_tb_new_folder", None), "new_folder", False),
-            (getattr(self, "_tb_rename", None), "rename", False),
             (getattr(self, "_tb_batch_rename", None), "batch_rename", False),
             (getattr(self, "_tb_bookmark", None), "bookmark", False),
             (getattr(self, "_tb_open_explorer", None), "reveal", False),
@@ -3653,6 +3847,10 @@ class FileManagerApp(QMainWindow):
     # Right-Click Context Menu
     # --------------------------------------------------------
     def _showContextMenu(self, panel, pos):
+        menu = self._buildContextMenu(panel, pos)
+        menu.exec_(panel.tableView().viewport().mapToGlobal(pos))
+
+    def _buildContextMenu(self, panel, pos):
         self._setActivePanel(panel)
         table = panel.tableView()
         index = table.indexAt(pos)
@@ -3666,7 +3864,7 @@ class FileManagerApp(QMainWindow):
 
         menu = QMenu(self)
 
-        entries = panel.selectedEntries()
+        entries = panel.selectedEntries() if index.isValid() else []
         has_selection = len(entries) > 0
         single_selection = len(entries) == 1
         in_archive = panel.isInArchive()
@@ -3759,9 +3957,9 @@ class FileManagerApp(QMainWindow):
                 edit_action.triggered.connect(self._onEditFile)
 
             if not in_archive:
-                reveal_action = menu.addAction("Open in File Explorer")
+                reveal_action = menu.addAction("Show in file manager")
                 reveal_action.setToolTip(
-                    "Open in File Explorer\n\n"
+                    "Show in file manager\n\n"
                     "Show this item in the system file manager "
                     "(selects the file or folder in Explorer)."
                 )
@@ -3887,17 +4085,18 @@ class FileManagerApp(QMainWindow):
         if not in_archive:
             menu.addSeparator()
 
-            new_folder_action = menu.addAction("New Folder\tF8")
+            new_folder_action = menu.addAction("New folder\tF8")
             new_folder_action.setToolTip(
                 "New folder\n\nCreate a folder in the current directory. Shortcut: F8."
             )
             new_folder_action.triggered.connect(self._onNewFolder)
 
-            batch_rename_action = menu.addAction("Batch Rename...\tCtrl+M")
+            batch_rename_action = menu.addAction("Batch rename…\tCtrl+M")
             batch_rename_action.setToolTip(
                 "Batch rename\n\nRename multiple files using patterns. Shortcut: Ctrl+M."
             )
             batch_rename_action.triggered.connect(self._onBatchRename)
+            batch_rename_action.setVisible(has_selection)
 
         if has_selection and not in_archive:
             compress_action = menu.addAction("Compress...")
@@ -3984,7 +4183,45 @@ class FileManagerApp(QMainWindow):
             )
             props_action.triggered.connect(lambda: self._showProperties(entries[0]))
 
-        menu.exec_(table.viewport().mapToGlobal(pos))
+        if not index.isValid():
+            copy_folder = menu.addAction("Copy current folder path")
+            copy_folder.triggered.connect(lambda: self._copyPathToClipboard(panel.currentPath()))
+            open_folder = menu.addAction("Open in file manager")
+            open_folder.triggered.connect(lambda: self._openFolderInExplorer(panel.currentPath()))
+        availability = self._actionAvailability()
+        for action in menu.actions():
+            title = action.text()
+            if title.startswith(("Copy to Other Panel", "Extract to Other Panel", "Copy Keeping Structure")):
+                action.setEnabled(availability["copy"])
+            elif title.startswith(("Move to Other Panel", "Move Keeping Structure")):
+                action.setEnabled(availability["move"])
+        actions = [action for action in menu.actions() if not action.isSeparator() and action.isVisible()]
+        def group(action):
+            title = action.text().lower()
+            if title.startswith(("open file", "open\t", "open in panel", "open in new tab", "open with", "view\t", "edit\t", "rename\t")) or title == "open":
+                return 0
+            if title.startswith(("cut\t", "copy\t", "paste\t")):
+                return 1
+            if title.startswith(("copy to other", "move to other", "extract", "copy keeping", "move keeping", "compare", "compress")):
+                return 2
+            if title.startswith("copy path") or title.startswith("copy current"):
+                return 3
+            if title.startswith(("show in file manager", "open in file manager", "open folder in terminal", "open terminal")):
+                return 4
+            if title.startswith("delete\t"):
+                return 6
+            return 5
+        for action in list(menu.actions()):
+            menu.removeAction(action)
+        for number in range(7):
+            group_actions = [action for action in actions if group(action) == number]
+            if group_actions and menu.actions():
+                menu.addSeparator()
+            if number == 0:
+                group_actions.sort(key=lambda action: 0 if action.text().lower().startswith("open\t") or action.text().lower() in ("open", "open file") else 1 if action.text().lower().startswith("rename\t") else 2)
+            for action in group_actions:
+                menu.addAction(action)
+        return menu
 
     def _onContextOpen(self, entry):
         if entry["is_dir"]:
@@ -4002,7 +4239,7 @@ class FileManagerApp(QMainWindow):
         if not path or not os.path.exists(path):
             QMessageBox.warning(
                 self,
-                "Open in File Explorer",
+                "Show in file manager",
                 "The selected item no longer exists.",
             )
             return
@@ -4024,7 +4261,7 @@ class FileManagerApp(QMainWindow):
         except Exception as e:
             QMessageBox.warning(
                 self,
-                "Open in File Explorer",
+                "Show in file manager",
                 f"Could not open in the file explorer:\n{e}",
             )
 
@@ -4465,20 +4702,32 @@ class FileManagerApp(QMainWindow):
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         seq = self._status_seq
         self._status_info.setText(message)
+        self._status_info.setToolTip(message)
+        self._status_message_active = True
+        self._status_message_persistent = not bool(timeout)
         if timeout:
-            self._status_info.setToolTip("")
             QTimer.singleShot(timeout, lambda s=seq: self._expireStatus(s))
         else:
             self._status_info.setToolTip(message)
 
     def _expireStatus(self, seq):
+        if getattr(self, "_drive_space_closed", False):
+            return
         if seq != getattr(self, "_status_seq", 0):
             return
-        self._status_info.setText("Ready")
-        self._status_info.setToolTip("")
+        self._status_message_active = False
+        self._updateStatusBar()
+
+    def _onStatusSelectionChanged(self):
+        if getattr(self, "_status_message_persistent", False):
+            self._status_message_active = False
+            self._status_message_persistent = False
+        self._updateStatusBar()
 
     def _updateStatusBar(self):
         if not self._active_panel:
+            return
+        if getattr(self, "_status_message_active", False):
             return
         entries = self._active_panel.selectedEntries()
         if entries:
@@ -4487,15 +4736,14 @@ class FileManagerApp(QMainWindow):
             files = len(entries) - dirs
             parts = []
             if files:
-                parts.append(f"{files} file(s)")
+                parts.append(f"{files} file" + ("s" if files != 1 else ""))
             if dirs:
-                parts.append(f"{dirs} folder(s)")
-            parts.append(f"Total: {formatFileSize(total_size)}")
-            self._status_info.setText(" | ".join(parts))
+                parts.append(f"{dirs} folder" + ("s" if dirs != 1 else ""))
+            message = f"{', '.join(parts)} selected · {formatFileSize(total_size)}"
         else:
-            self._status_info.setText("Ready")
-        self._status_info.setToolTip("")
-        self._status_seq = getattr(self, "_status_seq", 0) + 1
+            message = "Ready"
+        self._status_info.setText(message)
+        self._status_info.setToolTip(message)
 
     # --------------------------------------------------------
     # Method: _activePanelSideName
@@ -4569,7 +4817,7 @@ class FileManagerApp(QMainWindow):
             self._retireDriveSpaceWorker()
             return
         prefix = self._driveSpacePrefix(path)
-        self._drive_space_label.setText(f"{prefix} \u2014 reading\u2026")
+        self._drive_space_label.setText("Reading space…")
         self._retireDriveSpaceWorker()
         worker = DriveSpaceWorker(path)
         worker.finishedOk.connect(self._onDriveSpaceRead)
@@ -4584,6 +4832,8 @@ class FileManagerApp(QMainWindow):
     def _onDriveSpaceRead(self, path, space):
         if getattr(self, "_drive_space_closed", False):
             return
+        if self.sender() is not self._drive_space_worker:
+            return
         if not self._active_panel:
             return
         if path != self._active_panel.currentPath():
@@ -4596,7 +4846,8 @@ class FileManagerApp(QMainWindow):
                 f"{formatFileSize(space.used)} used, "
                 f"{formatFileSize(space.free)} free of {formatFileSize(space.total)}"
             )
-        self._drive_space_label.setText(f"{prefix} \u2014 {detail}")
+        self._drive_space_label.setText(f"{formatFileSize(space.free)} free" if space is not None else "Space unavailable")
+        self._drive_space_label.setToolTip(f"{prefix} · {path}\n{detail}")
 
     # --------------------------------------------------------
     # Method: _retireDriveSpaceWorker

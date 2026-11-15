@@ -250,29 +250,84 @@ RUNSH
 # ------------------------------------------------------------
 write_desktop_entry() {
   local apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-  local desktop="$apps_dir/total-commander-clone.desktop"
-  local py="$ROOT/.venv/bin/python"
+  local desktop="$apps_dir/waypane.desktop"
+  local temporary
   mkdir -p "$apps_dir"
-  {
-    echo "[Desktop Entry]"
-    echo "Type=Application"
-    echo "Version=1.0"
-    echo "Name=Total Commander Clone"
-    echo "Comment=Dual-pane file manager"
-    printf 'Exec="%s" "%s"\n' "$py" "$ROOT/main.py"
-    printf 'Path=%s\n' "$ROOT"
-    if [[ -f "$ROOT/file-explorer.ico" ]]; then
-      printf 'Icon=%s\n' "$ROOT/file-explorer.ico"
-    fi
-    echo "Terminal=false"
-    echo "Categories=Utility;FileManager;"
-    echo "StartupWMClass=Total Commander Clone"
-  } > "$desktop"
-  chmod 644 "$desktop"
+  temporary="$(mktemp --suffix=.desktop "$apps_dir/.waypane.XXXXXXXX")"
+  if ! "$ROOT/.venv/bin/python" - "$ROOT" "$temporary" <<'PYDESKTOP'
+import os
+import sys
+
+root, output = sys.argv[1:]
+def value(text):
+    return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+def argument(text):
+    text = text.replace("%", "%%")
+    for char in ('\\', '"', '$', '`'):
+        text = text.replace(char, '\\' + char)
+    return '"' + value(text) + '"'
+icon = os.path.join(root, 'icons/branding/waypane.png')
+if not os.path.isfile(icon):
+    icon = os.path.join(root, 'file-explorer.ico')
+lines = ['[Desktop Entry]', 'Type=Application', 'Version=1.0', 'Name=Waypane',
+         'Comment=Dual-pane file manager',
+         'Exec=' + argument(os.path.join(root, 'scripts/run.sh')),
+         'Path=' + value(root), 'Icon=' + value(icon), 'Terminal=false',
+         'Categories=System;FileTools;FileManager;', 'StartupWMClass=waypane']
+with open(output, 'w', encoding='utf-8') as handle:
+    handle.write('\n'.join(lines) + '\n')
+PYDESKTOP
+  then
+    rm -f "$temporary"
+    err "Could not create the Waypane desktop entry."
+    return 1
+  fi
+  if command -v desktop-file-validate >/dev/null 2>&1 && ! desktop-file-validate "$temporary"; then
+    rm -f "$temporary"
+    err "The Waypane desktop entry did not pass validation."
+    return 1
+  fi
+  chmod 644 "$temporary"
+  mv -f "$temporary" "$desktop"
+
+  # Only retire known launchers that point to this checkout.
+  "$ROOT/.venv/bin/python" - "$ROOT" "$apps_dir" "${XDG_DATA_HOME:-$HOME/.local/share}" <<'PYLEGACY'
+import os
+import pathlib
+import shlex
+import sys
+import time
+
+root, apps_dir, data_dir = map(pathlib.Path, sys.argv[1:])
+for name in ('total-commander-clone.desktop', 'Total Commander Clone.desktop'):
+    path = apps_dir / name
+    if not path.is_file() or path.is_symlink():
+        continue
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+        names = [line[5:] for line in lines if line.startswith('Name=')]
+        commands = [line[5:] for line in lines if line.startswith('Exec=')]
+        if names != ['Total Commander Clone'] or len(commands) != 1:
+            continue
+        args = shlex.split(commands[0])
+        direct = [str(root / '.venv/bin/python'), str(root / 'main.py')]
+        script = str(root / 'scripts/run.sh')
+        if args != direct and args not in ([script], ['bash', script], ['/bin/bash', script]):
+            continue
+        backup = data_dir / 'waypane' / 'launcher-backups'
+        backup.mkdir(parents=True, exist_ok=True)
+        target = backup / name
+        if target.exists():
+            target = backup / (str(time.time_ns()) + '-' + name)
+        path.rename(target)
+        print('[INFO] Backed up old launcher to ' + str(target))
+    except (OSError, UnicodeError, ValueError) as exc:
+        print('[WARN] Could not inspect or back up ' + str(path) + ': ' + str(exc), file=sys.stderr)
+PYLEGACY
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$apps_dir" || warn "Could not refresh the desktop database."
   fi
-  info "Wrote $desktop"
+  info "Wrote $desktop. Launch from the app menu to verify it."
 }
 
 # ------------------------------------------------------------
@@ -334,6 +389,20 @@ main() {
       ;;
   esac
 
+  if [[ $# -gt 1 ]] || { [[ $# -eq 1 ]] && [[ "$1" != "--launcher-only" ]]; }; then
+    err "Usage: $0 [--launcher-only]"
+    return 2
+  fi
+  if [[ "${1:-}" == "--launcher-only" ]]; then
+    if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+      err "Virtual environment missing. Run the full Linux installer first."
+      return 1
+    fi
+    write_run_sh
+    write_desktop_entry
+    return
+  fi
+
   detect_arch
   info "Detected OS: linux"
   info "Detected hardware: $ARCH — $ARCH_LABEL"
@@ -349,7 +418,7 @@ main() {
 
   info "Done."
   info "  Start from a terminal:  bash scripts/run.sh"
-  info "  Taskbar / menu:         Total Commander Clone"
+  info "  Taskbar / menu:         Waypane"
 }
 
 main "$@"

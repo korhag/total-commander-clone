@@ -1,5 +1,5 @@
 """
-Total Commander Clone - File Operation Queue
+Waypane - File Operation Queue
 Non-blocking FIFO queue for copy, move, and delete operations.
 Runs one FileOperationWorker at a time and emits signals for UI updates.
 """
@@ -55,6 +55,7 @@ class FileOperationTask:
     password: str = ""
     compression_level: str = ""
     base_dir: str = ""
+    waiting_for_decision: bool = False
 
     def summaryLabel(self):
         """Short label for list rows and the transfers bar."""
@@ -71,12 +72,12 @@ class FileOperationTask:
             op = f"{op} (structure)"
         if self.operation == FileOperationWorker.OPERATION_DELETE:
             return f"{op} {count} item(s)"
-        dest = self.destination or ""
-        if self.operation == "compress":
-            dest = os.path.basename(dest) or dest
-        if len(dest) > 40:
-            dest = "…" + dest[-37:]
-        return f"{op} {count} item(s) → {dest}"
+        if self.operation in (FileOperationWorker.OPERATION_COPY, FileOperationWorker.OPERATION_MOVE):
+            parents = list(dict.fromkeys(os.path.dirname(path) for path in self.source_paths))
+            source = parents[0] if len(parents) == 1 else "Multiple source folders"
+            return f"{op} {count} {'item' if count == 1 else 'items'} · {source} → {self.destination}"
+        return f"{op} {count} item(s) → {self.destination}"
+
 
 
 # ============================================================
@@ -96,6 +97,7 @@ class FileOperationQueue(QObject):
         self._worker: Optional[FileOperationWorker] = None
         self._current_task: Optional[FileOperationTask] = None
         self._parent_window = parent
+        self._conflict_dialog = None
 
     # --------------------------------------------------------
     # Public API
@@ -198,6 +200,8 @@ class FileOperationQueue(QObject):
         """Cancel the currently running task."""
         if self._current_task and self._worker:
             self._worker.cancel()
+            if self._conflict_dialog is not None:
+                self._conflict_dialog.reject()
 
     def cancelTask(self, task_id):
         """Cancel a pending task or the running task."""
@@ -212,7 +216,7 @@ class FileOperationQueue(QObject):
             self._tryStartNext()
             return
         if task.status == STATUS_RUNNING and self._worker:
-            self._worker.cancel()
+            self.cancelActive()
 
     def shutdown(self, timeout_ms):
         """Cancel pending and running work before the app exits.
@@ -227,6 +231,8 @@ class FileOperationQueue(QObject):
         if worker is None:
             return True
         worker.cancel()
+        if self._conflict_dialog is not None:
+            self._conflict_dialog.reject()
         return worker.wait(timeout_ms)
 
     def clearCompleted(self):
@@ -362,28 +368,33 @@ class FileOperationQueue(QObject):
         task = self._current_task
         if not task or not self._worker:
             return
-        op_names = {
-            FileOperationWorker.OPERATION_COPY: "Copy",
-            "extract": "Extract",
-        }
-        op_name = op_names.get(task.operation, "Move")
-        parent = self._parent_window
-        dialog = ConflictDialog(source_path, dest_path, op_name, parent)
-        if dialog.exec_() != QDialog.Accepted:
-            self._worker.setConflictResponse(CONFLICT_CANCEL, apply_to_all=False)
+        worker = self._worker
+        op_name = {FileOperationWorker.OPERATION_COPY: "Copy", "extract": "Extract"}.get(task.operation, "Move")
+        dialog = ConflictDialog(source_path, dest_path, op_name, self._parent_window)
+        self._conflict_dialog = dialog
+        task.waiting_for_decision = True
+        self.taskUpdated.emit(task)
+        try:
+            accepted = dialog.exec_() == QDialog.Accepted
+        finally:
+            if self._conflict_dialog is dialog:
+                self._conflict_dialog = None
+            task.waiting_for_decision = False
+            self.taskUpdated.emit(task)
+        if self._current_task is not task or self._worker is not worker:
             return
-        choice, apply_to_all = dialog.getChoice()
+        choice, apply_to_all = dialog.getChoice() if accepted else (CONFLICT_CANCEL, False)
         if not choice or choice == CONFLICT_CANCEL:
-            self._worker.setConflictResponse(CONFLICT_CANCEL, apply_to_all=False)
+            worker.setConflictResponse(CONFLICT_CANCEL, apply_to_all=False)
             return
-        new_dest = None
-        if choice == CONFLICT_KEEP_BOTH:
-            new_dest = _resolveConflictPath(dest_path)
-        self._worker.setConflictResponse(choice, new_dest, apply_to_all)
+        new_dest = _resolveConflictPath(dest_path) if choice == CONFLICT_KEEP_BOTH else None
+        worker.setConflictResponse(choice, new_dest, apply_to_all)
 
     def _onFinished(self, success, message):
         task = self._current_task
         worker = self._worker
+        if self._conflict_dialog is not None:
+            self._conflict_dialog.reject()
         self._worker = None
         self._current_task = None
 

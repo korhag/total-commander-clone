@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Batch Rename Dialog
+Waypane - Batch Rename Dialog
 Provides a multi-rename tool for bulk renaming files using
 find/replace, prefix/suffix, and regex patterns with a live
 preview table showing before/after names.

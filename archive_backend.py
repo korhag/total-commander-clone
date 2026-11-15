@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Archive backend
+Waypane - Archive backend
 
 Talks to the 7-Zip command-line tool (7zz, 7z, or 7za). No Qt here,
 so listing, path parsing, and the temp cache can be tested on their own.

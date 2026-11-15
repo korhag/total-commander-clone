@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Drive list
+Waypane - Drive list
 Builds the entries shown in each panel's drive dropdown:
   - Windows: drive letters (C:\\, D:\\, ...).
   - Linux: "/" and "~", then real mounted folders (USB sticks, network

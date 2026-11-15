@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Toolbar and button icons.
+Waypane - Toolbar and button icons.
 
 Three sheets live in icons/. Each is 6 columns by 4 rows.
 Tiles are recolored to the theme accent. Line icons are

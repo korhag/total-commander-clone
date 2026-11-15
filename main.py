@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Modern Dual-Pane File Manager
+Waypane - Modern Dual-Pane File Manager
 Entry point for the application.
 """
 
@@ -16,7 +16,7 @@ from PyQt5.QtGui import QIcon, QPalette
 from file_manager_app import FileManagerApp
 from settings_manager import SettingsManager
 from theme import applyTheme
-from app_version import APP_VERSION
+from app_version import APP_NAME, APP_VERSION
 
 
 # ------------------------------------------------------------
@@ -136,7 +136,7 @@ def configureWindowsTaskbarIdentity():
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "TCClone.FileExplorer"
+            "Korhag.Waypane"
         )
     except Exception:
         pass
@@ -149,6 +149,8 @@ def configureWindowsTaskbarIdentity():
 # ------------------------------------------------------------
 def resolveAppIconPath(base_path):
     candidate_paths = [
+        os.path.join(base_path, "icons", "branding", "waypane.png"),
+        os.path.join(getattr(sys, "_MEIPASS", base_path), "icons", "branding", "waypane.png"),
         os.path.join(base_path, "file-explorer.ico"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "file-explorer.ico"),
     ]
@@ -183,9 +185,10 @@ def main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
-    app.setApplicationName("Total Commander Clone")
+    app.setApplicationName(APP_NAME)
+    app.setDesktopFileName("waypane")
     app.setApplicationVersion(APP_VERSION)
-    app.setOrganizationName("TCClone")
+    app.setOrganizationName("Waypane")
     app._system_style_name = app.style().objectName()
     app._system_palette = QPalette(app.palette())
 

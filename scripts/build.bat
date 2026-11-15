@@ -7,33 +7,35 @@ REM Purpose: Build the current local sources into a standalone .exe
 REM          with PyInstaller. No Git sync, push, or pull.
 REM Project root: parent of this scripts\ folder (portable; no absolute paths).
 REM
-REM Builds to dist_build\ first so a locked dist\TotalCommanderClone does not
+REM Builds to dist_build\ first so a locked dist\Waypane does not
 REM block rebuilds. On success, promotes to dist\ when the old folder is removable.
 REM If dist\ is locked after build: stop the app, retry delete, then failsafe-merge
 REM (robocopy staging over dist, leaving locked files in place) so the taskbar
 REM shortcut path keeps working. Only prompts interactively if merge also fails.
 REM
-REM Pass debug for a console build (TotalCommanderClone-debug.exe).
+REM Pass debug for a console build (Waypane-debug.exe).
 REM ------------------------------------------------------------
 
 cd /d "%~dp0.."
 
 set "ICON=file-explorer.ico"
+if exist "icons\branding\waypane.png" set "ICON=icons\branding\waypane.png"
+if exist "icons\branding\waypane.ico" set "ICON=icons\branding\waypane.ico"
 set "SCRIPT=main.py"
-set "APP_EXE=TotalCommanderClone.exe"
-set "DIST_FINAL=dist\TotalCommanderClone"
+set "APP_EXE=Waypane.exe"
+set "DIST_FINAL=dist\Waypane"
 set "DIST_BUILD_ROOT=dist_build"
-set "DIST_STAGING=%DIST_BUILD_ROOT%\TotalCommanderClone"
-set "SPEC_FILE=TotalCommanderClone.spec"
+set "DIST_STAGING=%DIST_BUILD_ROOT%\Waypane"
+set "SPEC_FILE=Waypane.spec"
 set "PYTHON_EXE="
 set "PYTHON_ARGS="
 
 :parse_build_args
 if "%~1"=="" goto build_args_done
 if /I "%~1"=="debug" (
-    set "APP_EXE=TotalCommanderClone-debug.exe"
-    set "DIST_STAGING=%DIST_BUILD_ROOT%\TotalCommanderClone-debug"
-    set "SPEC_FILE=TotalCommanderClone-debug.spec"
+    set "APP_EXE=Waypane-debug.exe"
+    set "DIST_STAGING=%DIST_BUILD_ROOT%\Waypane-debug"
+    set "SPEC_FILE=Waypane-debug.spec"
     set "BUILD_DEBUG=1"
     shift
     goto parse_build_args
@@ -115,7 +117,7 @@ exit /b %ERRORLEVEL%
 
 REM ------------------------------------------------------------
 REM Subroutine: stop_running_app
-REM Purpose: End TotalCommanderClone.exe with retries (best effort).
+REM Purpose: End Waypane.exe with retries (best effort).
 REM ------------------------------------------------------------
 :stop_running_app
 call :is_app_running
@@ -308,7 +310,7 @@ call :merge_promote_into_dist
 if not errorlevel 1 exit /b 0
 
 set "CONFIRM="
-set /p "CONFIRM=Automatic promote failed. Retry delete of dist\TotalCommanderClone? [Y/N] "
+set /p "CONFIRM=Automatic promote failed. Retry delete of dist\Waypane? [Y/N] "
 if /I not "%CONFIRM%"=="Y" goto :promote_build_output_locked_decline
 
 echo [INFO] Removing locked %DIST_FINAL%\ ...
@@ -334,21 +336,21 @@ echo [INFO] Keeping current dist\ state. Run the new build from:
 echo         %DIST_STAGING%\%APP_EXE%
 echo [INFO] To finish later: close apps locking files under dist\, then run
 echo         scripts\build.bat again (or delete "%DIST_FINAL%" and move
-echo         dist_build\TotalCommanderClone into dist\).
+echo         dist_build\Waypane into dist\).
 echo [INFO] Settings are stored in %%APPDATA%%\TotalCommanderClone (persists across rebuilds).
 exit /b 0
 
 REM ------------------------------------------------------------
 REM Subroutine: print_dist_lock_hints
-REM Purpose: Suggest what may be holding dist\TotalCommanderClone.
+REM Purpose: Suggest what may be holding dist\Waypane.
 REM ------------------------------------------------------------
 :print_dist_lock_hints
-echo [INFO] dist\TotalCommanderClone may still be locked by:
+echo [INFO] dist\Waypane may still be locked by:
 call :is_app_running
 if not errorlevel 1 (
     echo         - %APP_EXE% is still running
 )
-echo         - File Explorer with dist\ or TotalCommanderClone open
+echo         - File Explorer with dist\ or Waypane open
 echo         - A terminal whose current directory is under dist\
 echo         - Another app that loaded DLLs from dist\_internal (e.g. VCRUNTIME*.dll)
 echo         Close those, then run scripts\build.bat again.

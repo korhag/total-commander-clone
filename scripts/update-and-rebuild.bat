@@ -4,7 +4,7 @@ setlocal EnableExtensions
 REM ------------------------------------------------------------
 REM Script: scripts/update-and-rebuild.bat
 REM Purpose: Called from the app when the user accepts an update.
-REM          Waits for TotalCommanderClone.exe to exit, gets the
+REM          Waits for Waypane.exe to exit, gets the
 REM          latest public code (git pull OR GitHub zip if Git is
 REM          missing), rebuilds with build.bat, then relaunches.
 REM
@@ -13,8 +13,8 @@ REM ------------------------------------------------------------
 
 cd /d "%~dp0.."
 
-set "APP_EXE=TotalCommanderClone.exe"
-set "DIST_EXE=dist\TotalCommanderClone\TotalCommanderClone.exe"
+set "APP_EXE=Waypane.exe"
+set "DIST_EXE=dist\Waypane\Waypane.exe"
 set "BRANCH=main"
 set "REMOTE=origin"
 set "PUBLIC_URL=https://github.com/korhag/total-commander-clone.git"
@@ -22,7 +22,7 @@ set "HAVE_GIT="
 
 echo.
 echo ============================================================
-echo  Total Commander Clone - Update and rebuild
+echo  Waypane - Update and rebuild
 echo ============================================================
 echo  Project: %cd%
 echo.

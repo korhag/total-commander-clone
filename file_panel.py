@@ -1,5 +1,5 @@
 """
-Total Commander Clone - File Panel Widget
+Waypane - File Panel Widget
 A single file-browser pane with address bar, navigation buttons,
 file table, sorting, filtering, in-place rename, and drag-and-drop.
 """
@@ -13,6 +13,7 @@ import stat
 import subprocess
 import time
 from datetime import datetime
+from functools import partial
 
 from drive_list import findDriveForPath, isRemotePath, listDrives
 from filter_spec import FilterSpec
@@ -105,7 +106,6 @@ def natural_sort_key(name):
 
 
 from responsive_layout import (
-    COLUMNS_HIDDEN_BY_TIER,
     FILTER_MIN_WIDTH_COMPACT,
     FILTER_MIN_WIDTH_WIDE,
     PANEL_MIN_WIDTH,
@@ -119,7 +119,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QAbstractItemView, QHeaderView, QFrame, QLabel,
     QStyledItemDelegate, QStyle, QApplication, QComboBox,
     QInputDialog, QMessageBox, QProgressDialog,
-    QMenu, QAction, QActionGroup, QCheckBox, QToolButton,
+    QMenu, QAction, QActionGroup, QCheckBox, QToolButton, QSizePolicy, QStackedWidget,
 )
 from PyQt5.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QVariant, QMimeData,
@@ -167,10 +167,10 @@ def normalizePathInput(text):
     if not text or not isinstance(text, str):
         return ""
     path = text.strip().strip('"\'')
-    if path.lower().startswith("file:///"):
-        path = path[8:].replace("/", os.sep)
-    elif path.lower().startswith("file://"):
-        path = path[7:].replace("/", os.sep)
+    if path.lower().startswith("file:"):
+        url = QUrl(path)
+        if url.isLocalFile():
+            path = url.toLocalFile()
     return os.path.normpath(path) if path else ""
 
 
@@ -1424,6 +1424,12 @@ class FileTableView(QTableView):
         super().resizeEvent(event)
         self.viewportResized.emit()
 
+    def viewportEvent(self, event):
+        result = super().viewportEvent(event)
+        if event.type() == QEvent.Resize:
+            self.viewportResized.emit()
+        return result
+
     # --------------------------------------------------------
     # Method: keyPressEvent
     # Purpose: Home and End move between rows. QTableView would
@@ -1749,6 +1755,120 @@ class _RenameLineEdit(QLineEdit):
 #          address bar, navigation buttons, filter input,
 #          file table, and status summary.
 # ============================================================
+def breadcrumbPaths(path, path_module=os.path):
+    """Return filesystem ancestors from root to the committed path."""
+    if not path:
+        return []
+    current = path_module.normpath(path)
+    result = []
+    while current:
+        parent = path_module.dirname(current)
+        label = path_module.basename(current) or current
+        result.append((label, current))
+        if not parent or parent == current:
+            break
+        current = parent
+    result.reverse()
+    return result
+
+
+class BreadcrumbBar(QWidget):
+    navigateRequested = pyqtSignal(str)
+    editRequested = pyqtSignal()
+    interacted = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("breadcrumbBar")
+        self._paths = []
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(2, 0, 2, 0)
+        self._layout.setSpacing(0)
+        self.setMinimumWidth(60)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def setPath(self, path):
+        self._paths = breadcrumbPaths(path)
+        self._rebuild()
+
+    def ancestorMenu(self, all_ancestors=False):
+        menu = QMenu(self)
+        paths = self._paths[:-1] if all_ancestors else getattr(self, "_hidden_paths", [])
+        for label, target in paths:
+            action = menu.addAction(label.replace("&", "&&"))
+            action.setToolTip(target)
+            action.triggered.connect(partial(self._navigate, target))
+        return menu
+
+    def _navigate(self, path, checked=False):
+        self.interacted.emit()
+        self.navigateRequested.emit(path)
+
+    def _rebuild(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        if not self._paths:
+            return
+        edit = QToolButton(self)
+        edit.setText("✎")
+        edit.setAccessibleName("Edit path")
+        edit.setToolTip("Edit path")
+        edit.clicked.connect(self.editRequested)
+        current_label, current_path = self._paths[-1]
+        current = QToolButton(self)
+        current.setAccessibleName(f"Edit path, current folder {current_label}")
+        current.setToolTip(current_path)
+        current.clicked.connect(self.editRequested)
+        available = max(1, self.width() - edit.sizeHint().width() - 12)
+        current_width = min(max(48, current.fontMetrics().horizontalAdvance(current_label) + 18), max(1, available - 28))
+        current.setText(current.fontMetrics().elidedText(current_label, Qt.ElideMiddle, max(1, current_width - 18)).replace("&", "&&"))
+        current.setFixedWidth(current_width)
+        ancestors = self._paths[:-1]
+        widths = [self.fontMetrics().horizontalAdvance(label) + 24 for label, _ in ancestors]
+        remaining = available - current_width
+        first = len(ancestors)
+        while first and widths[first - 1] <= remaining:
+            remaining -= widths[first - 1]
+            first -= 1
+        if first:
+            while first < len(ancestors) and remaining < 28:
+                remaining += widths[first]
+                first += 1
+            overflow = QToolButton(self)
+            overflow.setText("…")
+            overflow.setAccessibleName("Hidden parent folders")
+            overflow.setPopupMode(QToolButton.InstantPopup)
+            self._hidden_paths = ancestors[:first]
+            overflow.setMenu(self.ancestorMenu())
+            overflow.pressed.connect(self.interacted)
+            self._layout.addWidget(overflow)
+        else:
+            self._hidden_paths = []
+        for label, target in ancestors[first:]:
+            button = QToolButton(self)
+            button.setText(label.replace("&", "&&") + " ›")
+            button.setAccessibleName(label)
+            button.setToolTip(target)
+            button.clicked.connect(partial(self._navigate, target))
+            self._layout.addWidget(button)
+        self._layout.addWidget(current)
+        self._layout.addStretch(1)
+        self._layout.addWidget(edit)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rebuild()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._rebuild()
+
+
 class FilePanel(QWidget):
 
     pathChanged = pyqtSignal(str)
@@ -1760,6 +1880,7 @@ class FilePanel(QWidget):
     activated = pyqtSignal()
     dateModifiedFormatChanged = pyqtSignal(str)
     favoriteRequested = pyqtSignal()
+    renameStateChanged = pyqtSignal()
     # Emitted after this panel accepts a finished folder listing.
     listingFinished = pyqtSignal()
 
@@ -1776,6 +1897,8 @@ class FilePanel(QWidget):
         self._rename_edit = None
         self._scan_thread = None
         self._scan_progress = None
+        self._recursive_loading = False
+        self._recursive_cancelled = False
         self._retired_threads = set()
         self._pending_reselect = None
         self._pending_scroll = None
@@ -1786,6 +1909,7 @@ class FilePanel(QWidget):
         self._column_width_locked = {k: False for k in self.COLUMN_VISIBILITY_KEYS}
         self._locked_column_width_px = {}
         self._user_sized_columns = set()
+        self._manual_column_widths = {}
         self._applying_column_order = False
         # The user's column choice. Width tiers hide Type and Date on
         # screen without writing over this, so a narrow window is not saved.
@@ -1796,6 +1920,7 @@ class FilePanel(QWidget):
         self._filter_options_has_icon = False
         self._thumb_icon_set = False
         self._square_nav_buttons = []
+        self._path_error = ""
         self._focus_after_load = None
         self._cursor_placed = True
         self._viewport_layout_timer = QTimer(self)
@@ -1853,6 +1978,7 @@ class FilePanel(QWidget):
         button = QPushButton()
         button.setObjectName(object_name)
         button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip.split("\n", 1)[0])
         button.setAutoDefault(False)
         button.setDefault(False)
         width, height, icon = self._navControlSize()
@@ -1917,13 +2043,21 @@ class FilePanel(QWidget):
 
         self._btn_browse_folder = self._makeSquareButton(
             "navButton",
-            "Open in Explorer\n\nOpen this folder in the operating system's file manager "
+            "Open in file manager\n\nOpen this folder in the operating system's file manager "
             "(Windows Explorer, Finder, etc.).",
         )
         self._btn_browse_folder.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
         self._btn_browse_folder.clicked.connect(self._openCurrentFolderInSystemExplorer)
 
-        path_layout.addWidget(self._path_edit, 1)
+        self._address_stack = QStackedWidget()
+        self._address_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._breadcrumbs = BreadcrumbBar(self)
+        self._breadcrumbs.navigateRequested.connect(self._navigateBreadcrumb)
+        self._breadcrumbs.editRequested.connect(self.editPath)
+        self._breadcrumbs.interacted.connect(self.activated.emit)
+        self._address_stack.addWidget(self._breadcrumbs)
+        self._address_stack.addWidget(self._path_edit)
+        path_layout.addWidget(self._address_stack, 1)
         path_layout.addWidget(self._btn_copy_path)
         path_layout.addWidget(self._btn_paste_path)
         path_layout.addWidget(self._btn_browse_folder)
@@ -1943,20 +2077,24 @@ class FilePanel(QWidget):
         self._btn_back.setToolTip(
             "Back\n\nGo to the previous folder in this panel's history. Shortcut: Alt+Left."
         )
+        self._btn_back.setAccessibleName("Back")
         self._btn_back.setIcon(style.standardIcon(QStyle.SP_ArrowBack))
         self._btn_back.setEnabled(False)
         self._btn_forward.setToolTip(
             "Forward\n\nGo to the next folder in this panel's history. Shortcut: Alt+Right."
         )
+        self._btn_forward.setAccessibleName("Forward")
         self._btn_forward.setIcon(style.standardIcon(QStyle.SP_ArrowForward))
         self._btn_forward.setEnabled(False)
         self._btn_up.setToolTip(
             "Up\n\nOpen the parent folder. Shortcut: Backspace."
         )
+        self._btn_up.setAccessibleName("Up")
         self._btn_up.setIcon(style.standardIcon(QStyle.SP_ArrowUp))
         self._btn_home.setToolTip(
             "Home\n\nJump to your user home directory."
         )
+        self._btn_home.setAccessibleName("Home")
         self._btn_home.setText("\U0001F3E0")
         self._btn_home.clicked.connect(self._goHome)
 
@@ -2045,6 +2183,7 @@ class FilePanel(QWidget):
             "match mode, files or folders only, include subfolders (recursive search), "
             "size and modified date (with AND/OR), and saved presets."
         )
+        self._btn_filter_options.setAccessibleName("Filter settings")
         self._btn_filter_options.clicked.connect(self._onOpenFilterOptions)
         filter_opts_icon = QIcon.fromTheme("view-filter")
         if filter_opts_icon.isNull():
@@ -2074,6 +2213,7 @@ class FilePanel(QWidget):
             self._thumb_icon_set = True
             self._btn_thumbnails.setIcon(thumb_icon)
             self._btn_thumbnails.setIconSize(QSize(NAV_ICON_SIZE, NAV_ICON_SIZE))
+        self._btn_thumbnails.setAccessibleName("Thumbnails")
         self._btn_thumbnails.toggled.connect(self._onThumbnailsToggled)
 
         self._btn_overflow = QToolButton()
@@ -2085,6 +2225,7 @@ class FilePanel(QWidget):
         overflow_w, overflow_h, _overflow_icon = self._navControlSize()
         self._btn_overflow.setFixedSize(overflow_w, overflow_h)
         self._square_nav_buttons.append(self._btn_overflow)
+        self._btn_overflow.setAccessibleName("More pane actions")
         self._btn_overflow.setToolTip(
             "More\n\n"
             "Navigation, drives, and path actions that do not fit on this row."
@@ -2146,7 +2287,7 @@ class FilePanel(QWidget):
         nav_layout.addWidget(self._btn_new_folder)
         nav_layout.addWidget(self._drive_container)
         nav_layout.addWidget(self._filter_edit, 1)
-        nav_layout.addWidget(self._btn_clear_filter, 0, Qt.AlignVCenter)
+        self._btn_clear_filter.hide()
         nav_layout.addWidget(self._btn_filter_options, 0, Qt.AlignVCenter)
         nav_layout.addWidget(self._btn_thumbnails, 0, Qt.AlignVCenter)
         nav_layout.addWidget(self._btn_overflow, 0, Qt.AlignVCenter)
@@ -2157,22 +2298,13 @@ class FilePanel(QWidget):
         self._filter_banner = QWidget()
         self._filter_banner.setObjectName("panelFilterBanner")
         banner_layout = QHBoxLayout(self._filter_banner)
-        banner_layout.setContentsMargins(10, 6, 10, 6)
+        banner_layout.setContentsMargins(4, 1, 4, 1)
         banner_layout.setSpacing(10)
         self._filter_banner_label = QLabel()
         self._filter_banner_label.setObjectName("panelFilterBannerText")
-        self._filter_banner_label.setWordWrap(True)
-        self._filter_banner_refresh_btn = QPushButton("\u21bb Refresh")
-        self._filter_banner_refresh_btn.setObjectName("filterRefreshButton")
-        self._filter_banner_refresh_btn.setAutoDefault(False)
-        self._filter_banner_refresh_btn.setDefault(False)
-        self._filter_banner_refresh_btn.setToolTip(
-            "Refresh search\n\n"
-            "Force a full re-scan of the current folder (and subfolders when that "
-            "option is on), then re-apply all active filter rules. Use this if files "
-            "changed outside the app; normal copy/move updates the list without a full scan."
-        )
-        self._filter_banner_refresh_btn.clicked.connect(self.refreshFilterSearch)
+        self._filter_banner_label.setWordWrap(False)
+        self._filter_banner_label.setMinimumWidth(0)
+        self._filter_banner_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._filter_banner_btn = QPushButton("\u2715 Clear filter")
         self._filter_banner_btn.setObjectName("filterClearButton")
         self._filter_banner_btn.setAutoDefault(False)
@@ -2183,7 +2315,6 @@ class FilePanel(QWidget):
         )
         self._filter_banner_btn.clicked.connect(self.clearFilter)
         banner_layout.addWidget(self._filter_banner_label, 1)
-        banner_layout.addWidget(self._filter_banner_refresh_btn, 0, Qt.AlignVCenter)
         banner_layout.addWidget(self._filter_banner_btn, 0, Qt.AlignVCenter)
         self._filter_banner.setVisible(False)
         layout.addWidget(self._filter_banner)
@@ -2192,6 +2323,29 @@ class FilePanel(QWidget):
         self._table = FileTableView(self)
         self._table.setObjectName("panelFileTable")
         self._table.setModel(self._proxy_model)
+        self._empty_widget = QWidget(self._table.viewport())
+        self._empty_widget.setObjectName("fileListEmptyState")
+        self._empty_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._empty_widget.customContextMenuRequested.connect(
+            lambda point: self._table.customContextMenuRequested.emit(
+                self._empty_widget.mapTo(self._table.viewport(), point)
+            )
+        )
+        empty_layout = QVBoxLayout(self._empty_widget)
+        empty_layout.setContentsMargins(4, 4, 4, 4)
+        self._empty_label = QLabel()
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        self._empty_detail = QLabel()
+        self._empty_detail.setAlignment(Qt.AlignCenter)
+        self._empty_detail.setWordWrap(True)
+        self._empty_action = QPushButton()
+        self._empty_action.clicked.connect(self._onEmptyAction)
+        empty_layout.addWidget(self._empty_label)
+        empty_layout.addWidget(self._empty_detail)
+        empty_layout.addWidget(self._empty_action, 0, Qt.AlignCenter)
+        self._empty_widget.hide()
+
         self._table.setItemDelegate(FileTableItemDelegate(self._table))
         self._table.sortByColumn(0, Qt.AscendingOrder)
         self._header_section_mins = []
@@ -2258,10 +2412,14 @@ class FilePanel(QWidget):
         icon_sz = QSize(icon, icon)
         btn_w = metrics.get("nav_button_width", 30)
 
-        self._path_edit.setMinimumHeight(max(h, metrics.get("path_edit_height", h)))
+        path_height = max(h, metrics.get("path_edit_height", h))
+        self._path_edit.setFixedHeight(path_height)
+        self._address_stack.setFixedHeight(path_height)
         for btn in self._square_nav_buttons:
             btn.setFixedSize(btn_w, h)
             btn.setIconSize(icon_sz)
+        for button in (self._btn_copy_path, self._btn_paste_path, self._btn_browse_folder):
+            button.setFixedHeight(path_height)
         self._btn_clear_filter.setFixedHeight(h)
         self._btn_filter_options.setFixedHeight(h)
         self._btn_filter_options.setIconSize(icon_sz)
@@ -2539,7 +2697,8 @@ class FilePanel(QWidget):
         n = self._source_model.columnCount()
         hdr.setStretchLastSection(False)
         for col in range(n):
-            hdr.setSectionResizeMode(col, QHeaderView.Interactive)
+            mode = QHeaderView.Fixed if self._column_width_locked.get(self._columnKeyAt(col)) else QHeaderView.Interactive
+            hdr.setSectionResizeMode(col, mode)
 
     def _columnKeyAt(self, logical_index):
         """Logical column index -> persistence key (name/size/type/date_modified)."""
@@ -2616,6 +2775,17 @@ class FilePanel(QWidget):
         self.applyColumnOrder(list(self.COLUMN_VISIBILITY_KEYS))
         self._column_width_save_timer.start()
 
+    def resetColumnLayout(self):
+        self._column_width_save_timer.stop()
+        self._manual_column_widths.clear()
+        self._user_sized_columns.clear()
+        self._locked_column_width_px.clear()
+        self._column_width_locked = {key: False for key in self.COLUMN_VISIBILITY_KEYS}
+        self._user_column_visibility = {key: True for key in self.COLUMN_VISIBILITY_KEYS}
+        self.applyColumnOrder(list(self.COLUMN_VISIBILITY_KEYS))
+        self._applyResponsiveColumns()
+        self._persistColumnWidthsToState()
+
     # --------------------------------------------------------
     # Method: _onColumnSectionMoved
     # Purpose: A real header drag is remembered with the panel.
@@ -2628,9 +2798,9 @@ class FilePanel(QWidget):
     @classmethod
     def _sanitizeColumnVisibility(cls, vis_dict):
         """Ensure the Name column stays visible; fix corrupt %APPDATA% state."""
-        if not vis_dict:
+        if not isinstance(vis_dict, dict):
             return None
-        out = dict(vis_dict)
+        out = {k: v for k, v in vis_dict.items() if k in cls.COLUMN_VISIBILITY_KEYS and isinstance(v, bool)}
         if out.get("name") is False:
             out["name"] = True
         visible = [out.get(k, True) for k in cls.COLUMN_VISIBILITY_KEYS]
@@ -2641,18 +2811,11 @@ class FilePanel(QWidget):
     @classmethod
     def _sanitizeColumnWidths(cls, widths_dict):
         """Replace collapsed name/size/type widths from bad saves."""
-        if not widths_dict:
-            return None
-        out = dict(widths_dict)
-        min_w = cls.MIN_PERSISTED_COLUMN_WIDTH
-        name_w = out.get("name")
-        if name_w is None or not isinstance(name_w, (int, float)) or int(name_w) < min_w:
-            out["name"] = cls.DEFAULT_NAME_COLUMN_WIDTH
-        for key in cls.COLUMN_WIDTH_KEYS:
-            w = out.get(key)
-            if w is not None and isinstance(w, (int, float)) and 0 < int(w) < min_w:
-                out.pop(key, None)
-        return out
+        if not isinstance(widths_dict, dict):
+            return {}
+        return {k: int(v) for k, v in widths_dict.items()
+                if k in cls.COLUMN_WIDTH_KEYS and isinstance(v, (int, float))
+                and not isinstance(v, bool) and 48 <= v <= 100000}
 
     def getColumnWidthLockState(self):
         """Return locked flags and pixel widths for persistence."""
@@ -2669,26 +2832,12 @@ class FilePanel(QWidget):
 
     def applyColumnWidthLockState(self, data):
         """Restore column lock flags and stored widths from panel state."""
-        if not data:
-            return
-        locked_in = data.get("column_width_locked") or {}
-        widths_in = data.get("locked_column_widths") or {}
-        for k in self.COLUMN_VISIBILITY_KEYS:
-            if k in locked_in:
-                self._column_width_locked[k] = bool(locked_in[k])
-            else:
-                self._column_width_locked[k] = False
-        self._locked_column_width_px.clear()
-        min_w = self.MIN_PERSISTED_COLUMN_WIDTH
-        for k, w in widths_in.items():
-            if (
-                k in self.COLUMN_VISIBILITY_KEYS
-                and isinstance(w, (int, float))
-                and int(w) >= min_w
-            ):
-                self._locked_column_width_px[k] = int(w)
-            elif k in self.COLUMN_VISIBILITY_KEYS:
-                self._column_width_locked[k] = False
+        data = data if isinstance(data, dict) else {}
+        flags = data.get("column_width_locked")
+        flags = flags if isinstance(flags, dict) else {}
+        widths = self._sanitizeColumnWidths(data.get("locked_column_widths"))
+        self._locked_column_width_px = {k: v for k, v in widths.items() if flags.get(k) is True}
+        self._column_width_locked = {k: k in self._locked_column_width_px for k in self.COLUMN_VISIBILITY_KEYS}
 
     # --------------------------------------------------------
     # Method: _applyUserSizedState
@@ -2708,54 +2857,14 @@ class FilePanel(QWidget):
                 chosen.add(key)
         self._user_sized_columns = chosen
 
-    def _wouldLeaveNoUnlockedVisibleColumn(self, logical_index_being_locked):
-        """
-        True if every visible column except the one being locked is already locked,
-        so locking it would leave no flexible column for layout.
-        """
-        n = self._source_model.columnCount()
-        for c in range(n):
-            if self._table.isColumnHidden(c):
-                continue
-            k = self._columnKeyAt(c)
-            if not k:
-                continue
-            if c == logical_index_being_locked:
-                continue
-            if not self._column_width_locked.get(k):
-                return False
-        return True
-
     def _scheduleFitColumnsToViewport(self):
         """Coalesce rapid viewport resizes before the one-time initial fit."""
         self._viewport_layout_timer.start()
 
     def _onTableViewportResized(self):
         self._scheduleFitColumnsToViewport()
-
-    def _applyColumnMinimumWidthsOnly(self):
-        """
-        Raise columns only when below header/config minimums.
-        Never shrink or stretch columns to match the viewport.
-        """
-        n = self._source_model.columnCount()
-        visible = [c for c in range(n) if not self._table.isColumnHidden(c)]
-        if not visible:
-            return
-        hdr = self._table.horizontalHeader()
-        hdr.setMinimumSectionSize(
-            min(self._minWidthForColumn(c) for c in visible)
-        )
-        self._column_width_clamping = True
-        try:
-            hdr.blockSignals(True)
-            for c in visible:
-                floor = self._minWidthForColumn(c)
-                if self._table.columnWidth(c) < floor:
-                    self._table.setColumnWidth(c, floor)
-        finally:
-            hdr.blockSignals(False)
-            self._column_width_clamping = False
+        self._positionEmptyState()
+        self._scheduleListingUi()
 
     def _persistColumnWidthsToState(self):
         if self._settings_manager is None:
@@ -2768,6 +2877,7 @@ class FilePanel(QWidget):
         current.update(
             {
                 "column_widths": self.getColumnWidths(),
+                "column_visibility": self.getColumnVisibility(),
                 "column_width_locked": lock_state["column_width_locked"],
                 "locked_column_widths": lock_state["locked_column_widths"],
                 "column_user_sized": sorted(self._user_sized_columns),
@@ -2782,30 +2892,14 @@ class FilePanel(QWidget):
         key = self._columnKeyAt(logical_index)
         if not key:
             return
-        if locked and self._wouldLeaveNoUnlockedVisibleColumn(logical_index):
-            QMessageBox.information(
-                self,
-                "Lock column width",
-                "At least one visible column must stay unlocked so the panel can adjust "
-                "when you resize the window or the sidebar.",
-            )
-            act = self.sender()
-            if isinstance(act, QAction):
-                act.blockSignals(True)
-                act.setChecked(False)
-                act.blockSignals(False)
-            return
         self._column_width_locked[key] = bool(locked)
         if locked:
-            self._locked_column_width_px[key] = max(
-                1, self._table.columnWidth(logical_index)
-            )
+            self._locked_column_width_px[key] = self._table.columnWidth(logical_index)
         else:
             self._locked_column_width_px.pop(key, None)
-        if self._freeze_column_widths:
-            self._applyColumnMinimumWidthsOnly()
-        else:
-            self._fitColumnsToViewport()
+        self._updateColumnStretchBehavior()
+        self._fitColumnsToViewport()
+        self._column_width_save_timer.start()
 
     # --------------------------------------------------------
     # Method: _preferredWidthForColumn
@@ -2834,183 +2928,59 @@ class FilePanel(QWidget):
             width = max(width, fm.horizontalAdvance(sample) + pad)
         return width
 
-    # --------------------------------------------------------
-    # Method: _startingColumnWidth
-    # Purpose: Locked and hand-dragged columns keep their width.
-    #          Size, Type, and Date otherwise start at the
-    #          preferred width so an old wide Size column
-    #          does not leave a blank band.
-    # --------------------------------------------------------
-    def _startingColumnWidth(self, col, floor):
-        key = self._columnKeyAt(col)
-        if key and self._column_width_locked.get(key):
-            locked = self._locked_column_width_px.get(key)
-            if locked is not None:
-                return max(floor, int(locked))
-        if key and key in self._user_sized_columns:
-            return max(floor, self._table.columnWidth(col))
-        preferred = self._preferredWidthForColumn(col)
-        if preferred is None:
-            return max(floor, self._table.columnWidth(col))
-        return max(floor, preferred)
-
-    # --------------------------------------------------------
-    # Method: _columnsToShrink
-    # Purpose: Name gives up width first. Then the other
-    #          columns the user has not dragged or locked.
-    # --------------------------------------------------------
-    def _columnsToShrink(self, visible, flex, locked_set, widths, col_floor):
-        if (
-            0 in visible
-            and "name" not in self._user_sized_columns
-            and not self._column_width_locked.get("name")
-            and widths.get(0, 0) > col_floor(0)
-        ):
-            return [0]
-        pool = [
-            col
-            for col in flex
-            if self._columnKeyAt(col) not in self._user_sized_columns
-            and widths[col] > col_floor(col)
-        ]
-        if pool:
-            return pool
-        pool = [col for col in flex if widths[col] > col_floor(col)]
-        if pool:
-            return pool
-        pool = [col for col in locked_set if widths[col] > col_floor(col)]
-        if pool:
-            return pool
-        return [col for col in visible if widths[col] > 1]
-
-    # --------------------------------------------------------
-    # Method: _reflowColumnsToViewport
-    # Purpose: Pack Size, Type, and Date, and give the rest
-    #          of the pane to Name. Used after a resize and
-    #          after saved widths are restored.
-    # --------------------------------------------------------
     def _reflowColumnsToViewport(self):
         self._fitColumnsToViewport()
 
     def _fitColumnsToViewport(self):
-        """
-        Fit visible columns into the viewport. Name takes the
-        leftover. Locked and hand-dragged columns keep their width.
-        """
         if self._column_width_clamping:
             return
-        vw = max(1, self._table.viewport().width())
-        hdr = self._table.horizontalHeader()
-        n = self._source_model.columnCount()
-        keys = self.COLUMN_VISIBILITY_KEYS
-        visible = [c for c in range(n) if not self._table.isColumnHidden(c)]
-        m = len(visible)
-        if m == 0:
+        table = self._table
+        header = table.horizontalHeader()
+        visible = [header.logicalIndex(i) for i in range(header.count())
+                   if not table.isColumnHidden(header.logicalIndex(i))]
+        if not visible or table.viewport().width() <= 1:
             return
-
-        def col_floor(c):
-            return self._minWidthForColumn(c, vw)
-
-        hdr.setMinimumSectionSize(
-            min(col_floor(c) for c in visible) if visible else 24
-        )
-
-        locked_set = set()
+        viewport = table.viewport().width()
+        floors = {c: self._minWidthForColumn(c) for c in visible}
+        widths = {}
         for c in visible:
-            k = self._columnKeyAt(c)
-            if k and self._column_width_locked.get(k):
-                locked_set.add(c)
-
-        flex = [c for c in visible if c not in locked_set]
-
-        w = {}
-        for c in visible:
-            w[c] = self._startingColumnWidth(c, col_floor(c))
-
-        def total_width():
-            return sum(w[c] for c in visible)
-
-        total = total_width()
-        if total > vw:
-            sum_l = sum(w[c] for c in locked_set)
-            sum_f = sum(w[c] for c in flex)
-            min_flex_total = sum(col_floor(c) for c in flex)
-
-            if not flex:
-                if total > 0:
-                    factor = vw / total
-                    for c in visible:
-                        w[c] = max(col_floor(c), int(w[c] * factor))
-                    drift = vw - sum(w[c] for c in visible)
-                    if drift != 0:
-                        last = visible[-1]
-                        w[last] = max(col_floor(last), w[last] + drift)
-            else:
-                max_lock_sum = max(0, vw - min_flex_total)
-                if sum_l > max_lock_sum and locked_set:
-                    factor = max_lock_sum / sum_l if sum_l else 0
-                    for c in locked_set:
-                        w[c] = max(col_floor(c), int(w[c] * factor))
-                    sum_l = sum(w[c] for c in locked_set)
-
-                rem = vw - sum_l
-                sum_f = sum(w[c] for c in flex)
-                if rem < min_flex_total:
-                    base = rem // len(flex)
-                    rmd = rem % len(flex)
-                    for i, c in enumerate(flex):
-                        w[c] = max(col_floor(c), base + (1 if i < rmd else 0))
-                elif sum_f > 0:
-                    factor = rem / sum_f
-                    for c in flex:
-                        w[c] = max(col_floor(c), int(w[c] * factor))
-                    drift = rem - sum(w[c] for c in flex)
-                    if drift != 0:
-                        last_flex = flex[-1]
-                        w[last_flex] = max(col_floor(last_flex), w[last_flex] + drift)
-
-            while total_width() > vw:
-                pool = self._columnsToShrink(visible, flex, locked_set, w, col_floor)
-                if not pool:
-                    break
-                w[max(pool, key=lambda x: w[x])] -= 1
-
-        total = total_width()
-        if total < vw:
-            extra = vw - total
-            date_col = self.COLUMN_VISIBILITY_KEYS.index("date_modified")
-            if date_col in visible:
-                preferred = self._preferredWidthForColumn(date_col) or 0
-                date_cap = max(
-                    preferred,
-                    self._minWidthForColumn(date_col, vw),
-                    int(round(self.DATE_COLUMN_MAX_WIDTH * getattr(self, "_layout_scale", 1.0))),
-                )
-                if w[date_col] > date_cap and "date_modified" not in self._user_sized_columns:
-                    extra += w[date_col] - date_cap
-                    w[date_col] = date_cap
-            if 0 in visible and extra > 0:
-                w[0] += extra
-            elif flex and extra > 0:
-                w[flex[-1]] += extra
-            elif extra > 0:
-                w[visible[-1]] += extra
-        elif total > vw:
-            last = visible[-1]
-            w[last] -= total - vw
-            w[last] = max(col_floor(last), w[last])
-
+            key = self._columnKeyAt(c)
+            target = self._locked_column_width_px.get(key)
+            if target is None:
+                target = self._manual_column_widths.get(key)
+            if target is None:
+                target = self._preferredWidthForColumn(c) or floors[c]
+            widths[c] = max(floors[c], target)
+        auto = [c for c in visible if not self._column_width_locked.get(self._columnKeyAt(c))
+                and self._columnKeyAt(c) not in self._manual_column_widths]
+        surplus = viewport - sum(widths.values())
+        if surplus > 0 and auto:
+            widths[0 if 0 in auto else auto[-1]] += surplus
+        elif surplus < 0:
+            groups = [[0] if 0 in auto else [], [c for c in auto if c != 0],
+                      [c for c in visible if self._columnKeyAt(c) in self._manual_column_widths
+                       and not self._column_width_locked.get(self._columnKeyAt(c))]]
+            deficit = -surplus
+            for group in groups:
+                capacity = sum(widths[c] - floors[c] for c in group)
+                reduction = min(deficit, capacity)
+                if not reduction:
+                    continue
+                shares = {c: reduction * (widths[c] - floors[c]) // capacity for c in group}
+                remainder = reduction - sum(shares.values())
+                for c in group:
+                    if remainder and shares[c] < widths[c] - floors[c]:
+                        shares[c] += 1
+                        remainder -= 1
+                    widths[c] -= shares[c]
+                deficit -= reduction
         self._column_width_clamping = True
         try:
-            hdr.blockSignals(True)
+            header.setMinimumSectionSize(min(floors.values()))
             for c in visible:
-                self._table.setColumnWidth(c, max(1, w[c]))
-            for c in locked_set:
-                k = keys[c]
-                self._locked_column_width_px[k] = self._table.columnWidth(c)
+                table.setColumnWidth(c, widths[c])
             self._updateColumnStretchBehavior()
         finally:
-            hdr.blockSignals(False)
             self._column_width_clamping = False
 
     def applyColumnVisibility(self, vis_dict):
@@ -3051,17 +3021,13 @@ class FilePanel(QWidget):
     #          the panel shows them again.
     # --------------------------------------------------------
     def _applyResponsiveColumns(self):
-        hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
-        user = self._userColumnVisibility()
-        for col, key in enumerate(self.COLUMN_VISIBILITY_KEYS):
-            if col >= self._source_model.columnCount():
-                break
-            show = bool(user.get(key, True)) and key not in hidden_keys
-            self._table.setColumnHidden(col, not show)
-        if self._freeze_column_widths:
-            self._reflowColumnsToViewport()
-        else:
-            self._fitColumnsToViewport()
+        self._column_width_clamping = True
+        try:
+            for col, key in enumerate(self.COLUMN_VISIBILITY_KEYS):
+                self._table.setColumnHidden(col, not self._userColumnVisibility().get(key, True))
+        finally:
+            self._column_width_clamping = False
+        self._fitColumnsToViewport()
 
     def relayoutColumns(self):
         """Pack Size, Type, and Date, and give the leftover width to Name."""
@@ -3069,40 +3035,12 @@ class FilePanel(QWidget):
         self._freeze_column_widths = True
 
     def applyColumnWidths(self, widths_dict):
-        """Apply saved column widths, then pack the pane."""
-        widths_dict = self._sanitizeColumnWidths(widths_dict)
-        if not widths_dict:
-            return
-        min_w = self.MIN_PERSISTED_COLUMN_WIDTH
-        header = self._table.horizontalHeader()
-        self._column_width_clamping = True
-        try:
-            header.blockSignals(True)
-            for col, key in enumerate(self.COLUMN_WIDTH_KEYS):
-                if col >= self._source_model.columnCount():
-                    break
-                w = widths_dict.get(key)
-                if (
-                    w is not None
-                    and isinstance(w, (int, float))
-                    and int(w) >= min_w
-                ):
-                    self._table.setColumnWidth(col, int(w))
-        finally:
-            header.blockSignals(False)
-            self._column_width_clamping = False
-        self._reflowColumnsToViewport()
-        self._freeze_column_widths = True
+        widths = self._sanitizeColumnWidths(widths_dict)
+        self._manual_column_widths = {k: v for k, v in widths.items() if k in self._user_sized_columns}
+        self._fitColumnsToViewport()
 
     def getColumnWidths(self):
-        """Return column widths for persistence (all visible logical columns)."""
-        min_w = self.MIN_PERSISTED_COLUMN_WIDTH
-        return {
-            key: self._table.columnWidth(col)
-            for col, key in enumerate(self.COLUMN_WIDTH_KEYS)
-            if col < self._source_model.columnCount()
-            and self._table.columnWidth(col) >= min_w
-        }
+        return dict(self._manual_column_widths)
 
     # --------------------------------------------------------
     # Method: _connectSignals
@@ -3124,7 +3062,12 @@ class FilePanel(QWidget):
         if selection_model:
             selection_model.selectionChanged.connect(self._onSelectionChanged)
 
-        self._source_model.modelReset.connect(self._updateStatusLabel)
+        self._source_model.modelReset.connect(self._scheduleListingUi)
+        self._source_model.rowsInserted.connect(self._scheduleListingUi)
+        self._source_model.rowsRemoved.connect(self._scheduleListingUi)
+        self._proxy_model.modelReset.connect(self._scheduleListingUi)
+        self._proxy_model.rowsInserted.connect(self._scheduleListingUi)
+        self._proxy_model.rowsRemoved.connect(self._scheduleListingUi)
         self._source_model.recursiveScanAbortRequested.connect(
             self._cancelRecursiveScanThread
         )
@@ -3142,9 +3085,11 @@ class FilePanel(QWidget):
             return
         key = self._columnKeyAt(logical_index)
         if key:
+            if self._column_width_locked.get(key):
+                return
             self._user_sized_columns.add(key)
-        self._freeze_column_widths = True
-        self._applyColumnMinimumWidthsOnly()
+            self._manual_column_widths[key] = max(self._minWidthForColumn(logical_index), _new_size)
+        self._fitColumnsToViewport()
         self._column_width_save_timer.start()
 
     # --------------------------------------------------------
@@ -3169,6 +3114,7 @@ class FilePanel(QWidget):
             self._drive_combo,
             self._drive_arrow,
             self._table.horizontalHeader(),
+            self._table,
         ]
 
         combo_line_edit = self._drive_combo.lineEdit()
@@ -3269,6 +3215,7 @@ class FilePanel(QWidget):
             self._history.append(path)
             self._history_index = len(self._history) - 1
 
+        self._path_error = ""
         self._pending_reselect = None
         self._pending_scroll = None
         self._scroll_to_top_when_loaded = True
@@ -3276,8 +3223,10 @@ class FilePanel(QWidget):
         self._cursor_placed = False
         self._source_model.loadDirectory(path)
         self._path_edit.setText(path)
+        self._breadcrumbs.setPath(path)
+        self._address_stack.setCurrentWidget(self._breadcrumbs)
         self._updateNavButtons()
-        self._updateStatusLabel()
+        self._updateFilterUi()
         self._syncDriveCombo(path)
         self._watchCurrentFolder()
         self.pathChanged.emit(path)
@@ -3318,7 +3267,7 @@ class FilePanel(QWidget):
                 self._pending_scroll = scroll_value
             else:
                 self._reselectPaths(selected)
-            self._updateStatusLabel()
+            self._updateFilterUi()
 
     # --------------------------------------------------------
     # Method: setAutoRefreshEnabled
@@ -3615,7 +3564,7 @@ class FilePanel(QWidget):
             return
         dlg_parent = self.window()
         name, ok = QInputDialog.getText(
-            dlg_parent, "New Folder", "Folder name:",
+            dlg_parent, "New folder", "Folder name:",
         )
         if not ok or not name.strip():
             return
@@ -3799,6 +3748,7 @@ class FilePanel(QWidget):
         self._is_active = active
         self._updateFrameStyle()
         if not active:
+            self._showBreadcrumbs()
             self._table.cancelPendingRename()
             if self.isRenaming():
                 self._commitRename()
@@ -3857,6 +3807,7 @@ class FilePanel(QWidget):
         self._rename_edit = _RenameLineEdit(self._table.viewport())
         self._rename_edit.setObjectName("panelRenameEdit")
         self._rename_edit.setAttribute(Qt.WA_StyledBackground, True)
+        self._table.scrollTo(name_index)
         rect = self._table.visualRect(name_index)
         icon_offset = 28
         self._rename_edit.setGeometry(
@@ -3879,6 +3830,7 @@ class FilePanel(QWidget):
         self._rename_edit.setFocus()
         self._rename_edit.raise_()
         self._rename_edit.show()
+        self.renameStateChanged.emit()
 
     # --------------------------------------------------------
     # Method: commitRename  (public so the main window can
@@ -3958,6 +3910,7 @@ class FilePanel(QWidget):
             self._rename_edit.deleteLater()
             self._rename_edit = None
         self._table.setRenamingRow(-1)
+        self.renameStateChanged.emit()
         if self._auto_refresh_deferred:
             self._auto_refresh_timer.start()
 
@@ -4013,6 +3966,7 @@ class FilePanel(QWidget):
         return len(history) - 1
 
     def restoreHistoryData(self, data):
+        self._showBreadcrumbs()
         history = data.get("history", [])
         self._history = history if isinstance(history, list) else []
         self._source_model.setRecursive(
@@ -4025,25 +3979,15 @@ class FilePanel(QWidget):
         if isNavigablePath(current):
             self._history_index = self._historyIndexFromState(data, current)
             self.navigateTo(current, add_to_history=False)
-        self.applyColumnWidthLockState(
-            {
-                "column_width_locked": data.get("column_width_locked"),
-                "locked_column_widths": data.get("locked_column_widths"),
-            }
-        )
+        self.applyColumnWidthLockState(data)
         self._applyUserSizedState(data.get("column_user_sized"))
-        column_widths = self._sanitizeColumnWidths(data.get("column_widths"))
-        if column_widths:
-            self.applyColumnWidths(column_widths)
-        column_visibility = self._sanitizeColumnVisibility(data.get("column_visibility"))
-        if column_visibility:
-            self.applyColumnVisibility(column_visibility)
-        else:
-            self._fitColumnsToViewport()
-            self._freeze_column_widths = True
-        order = self._sanitizeColumnOrder(data.get("column_order"))
-        if order:
-            self.applyColumnOrder(order)
+        self._manual_column_widths = {k: v for k, v in self._sanitizeColumnWidths(data.get("column_widths")).items() if k in self._user_sized_columns}
+        self._user_sized_columns.intersection_update(self._manual_column_widths)
+        visibility = self._sanitizeColumnVisibility(data.get("column_visibility")) or {}
+        self._user_column_visibility = {k: visibility.get(k, True) for k in self.COLUMN_VISIBILITY_KEYS}
+        self._user_column_visibility["name"] = True
+        self.applyColumnOrder(self._sanitizeColumnOrder(data.get("column_order")) or list(self.COLUMN_VISIBILITY_KEYS))
+        self._applyResponsiveColumns()
         fm = data.get("filter_mode")
         if fm in ("contains", "wildcard", "regex"):
             self._proxy_model.setFilterMode(fm)
@@ -4098,10 +4042,17 @@ class FilePanel(QWidget):
             self._drive_combo,
             self._drive_arrow,
             self._table.horizontalHeader(),
+            self._table,
             self._drive_combo.lineEdit(),
         ):
             self.activated.emit()
 
+        if obj is self._path_edit and event.type() == QEvent.FocusOut:
+            QTimer.singleShot(0, self._restoreBreadcrumbsAfterFocus)
+        if obj is self._path_edit and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self._showBreadcrumbs()
+            self._table.setFocus()
+            return True
         if event.type() == QEvent.KeyPress and obj in (self._path_edit, self._filter_edit):
             if event.key() == Qt.Key_Up:
                 self._table.setFocus()
@@ -4126,6 +4077,10 @@ class FilePanel(QWidget):
     # Purpose: Moves the current selection up or down by one row.
     #          direction: -1 = up, 1 = down.
     # --------------------------------------------------------
+    def _restoreBreadcrumbsAfterFocus(self):
+        if self._address_stack.currentWidget() is self._path_edit and not self._path_edit.hasFocus():
+            self._showBreadcrumbs()
+
     def _moveFileSelection(self, direction):
         model = self._table.model()
         row_count = model.rowCount()
@@ -4149,8 +4104,40 @@ class FilePanel(QWidget):
     # --------------------------------------------------------
     # Internal Slots
     # --------------------------------------------------------
+    def editPath(self):
+        self.activated.emit()
+        self._path_edit.setText(self.currentPath() or "")
+        self._address_stack.setCurrentWidget(self._path_edit)
+        self._path_edit.setFocus()
+        self._path_edit.selectAll()
+
+    def _showBreadcrumbs(self):
+        self._path_edit.setText(self.currentPath() or "")
+        self._address_stack.setCurrentWidget(self._breadcrumbs)
+        self._path_error = ""
+        self._updateStatusLabel()
+
+    def _navigateBreadcrumb(self, target):
+        current = self.currentPath()
+        relative = os.path.relpath(current, target)
+        child = os.path.join(target, relative.split(os.sep, 1)[0])
+        if not self.navigateTo(target, focus_path=child):
+            self._path_error = f"Folder not found: {target}"
+            self._status_label.setText(self._path_error)
+        else:
+            self._table.setFocus()
+
+    def showAncestorMenu(self):
+        self.activated.emit()
+        menu = self._breadcrumbs.ancestorMenu(all_ancestors=True)
+        if menu.actions():
+            menu.exec_(self._breadcrumbs.mapToGlobal(QPoint(0, self._breadcrumbs.height())))
+
     def _onPathEdited(self):
-        self.commitPath()
+        if self.commitPath():
+            self._table.setFocus()
+        else:
+            self._path_edit.selectAll()
 
     # --------------------------------------------------------
     # Method: commitPath
@@ -4174,7 +4161,8 @@ class FilePanel(QWidget):
         current = self._source_model.currentPath()
         if current:
             self._path_edit.setText(current)
-        self._status_label.setText(f"Folder not found: {path}")
+        self._path_error = f"Folder not found: {path}"
+        self._status_label.setText(self._path_error)
         return False
 
     def _copyPathToClipboard(self):
@@ -4329,6 +4317,7 @@ class FilePanel(QWidget):
             self._settings_manager.setSetting("date_modified_format", key)
             self._settings_manager.saveSettings()
         self._source_model.setDateModifiedFormatKey(key)
+        self._fitColumnsToViewport()
         if persist:
             self.dateModifiedFormatChanged.emit(key)
 
@@ -4340,18 +4329,14 @@ class FilePanel(QWidget):
         n = self._source_model.columnCount()
         hdr = self._table.horizontalHeader()
         user = self._userColumnVisibility()
-        hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
         for col in range(n):
             label = FileSystemModel.COLUMNS[col]
             key = self._columnKeyAt(col)
             act = QAction(label, menu)
             act.setCheckable(True)
             act.setChecked(bool(user.get(key, True)))
-            if key in hidden_keys and user.get(key, True):
-                act.setToolTip(
-                    "Hidden while this panel is narrow. "
-                    "It comes back when the panel is wider."
-                )
+            if key == "name":
+                act.setEnabled(False)
             act.toggled.connect(
                 lambda checked, c=col, a=act: self._applyColumnVisibilityToggle(c, checked, a)
             )
@@ -4399,6 +4384,7 @@ class FilePanel(QWidget):
             "Distribute columns evenly\n\n"
             "Resize all visible columns to the same width so together they fill the panel."
         )
+        act_even.setEnabled(any(not self._table.isColumnHidden(c) and not self._column_width_locked.get(self._columnKeyAt(c)) for c in range(n)))
         act_even.triggered.connect(self._distributeColumnsEvenly)
         menu.addAction(act_even)
         act_reset = QAction("Reset column order", menu)
@@ -4408,71 +4394,47 @@ class FilePanel(QWidget):
         )
         act_reset.triggered.connect(self.resetColumnOrder)
         menu.addAction(act_reset)
+        reset_layout = QAction("Reset column layout", menu)
+        reset_layout.triggered.connect(self.resetColumnLayout)
+        menu.addAction(reset_layout)
         menu.exec_(hdr.mapToGlobal(pos))
 
     def _applyColumnVisibilityToggle(self, col, visible, action):
         key = self._columnKeyAt(col)
         if key is None:
             return
-        user = dict(self._userColumnVisibility())
-        if not visible:
-            user[key] = False
-            hidden_keys = COLUMNS_HIDDEN_BY_TIER.get(self._layout_tier, ())
-            still_shown = [
-                name for name in self.COLUMN_VISIBILITY_KEYS
-                if user.get(name, False) and name not in hidden_keys
-            ]
-            if not still_shown:
-                QMessageBox.information(
-                    self,
-                    "Columns",
-                    "At least one column must stay visible.",
-                )
-                action.blockSignals(True)
-                action.setChecked(True)
-                action.blockSignals(False)
-                return
-        else:
-            user[key] = True
-        self._user_column_visibility = user
-        self._freeze_column_widths = True
+        if key == "name":
+            return
+        self._user_column_visibility[key] = bool(visible)
         self._applyResponsiveColumns()
+        self._column_width_save_timer.start()
 
     def _distributeColumnsEvenly(self):
-        """Give each unlocked visible column an equal share; locked widths stay fixed."""
-        hdr = self._table.horizontalHeader()
-        n = self._source_model.columnCount()
-        visible = [c for c in range(n) if not self._table.isColumnHidden(c)]
-        m = len(visible)
-        if m == 0:
-            return
-        vw = max(1, self._table.viewport().width())
-        keys = self.COLUMN_VISIBILITY_KEYS
-        locked = set()
-        for c in visible:
-            k = self._columnKeyAt(c)
-            if k and self._column_width_locked.get(k):
-                locked.add(c)
-        flex = [c for c in visible if c not in locked]
-        if not flex:
-            self._fitColumnsToViewport()
-            self._freeze_column_widths = True
-            return
-        fixed_sum = sum(max(1, self._table.columnWidth(c)) for c in locked)
-        rem = max(1, vw - fixed_sum)
-        base = rem // len(flex)
-        extra = rem % len(flex)
-        self._column_width_clamping = True
-        try:
-            hdr.blockSignals(True)
-            for i, col in enumerate(flex):
-                wcol = base + (1 if i < extra else 0)
-                self._table.setColumnWidth(col, max(1, wcol))
-        finally:
-            hdr.blockSignals(False)
-            self._column_width_clamping = False
+        table = self._table
+        header = table.horizontalHeader()
+        visible = [header.logicalIndex(i) for i in range(header.count())
+                   if not table.isColumnHidden(header.logicalIndex(i))]
+        flex = [c for c in visible if not self._column_width_locked.get(self._columnKeyAt(c))]
+        remaining = table.viewport().width() - sum(table.columnWidth(c) for c in visible if c not in flex)
+        pending = list(flex)
+        while pending:
+            base, extra = divmod(max(0, remaining), len(pending))
+            constrained = [c for c in pending if self._minWidthForColumn(c) > base]
+            if not constrained:
+                for i, c in enumerate(pending):
+                    key = self._columnKeyAt(c)
+                    self._manual_column_widths[key] = base + (i < extra)
+                    self._user_sized_columns.add(key)
+                break
+            for c in constrained:
+                key = self._columnKeyAt(c)
+                width = self._minWidthForColumn(c)
+                self._manual_column_widths[key] = width
+                self._user_sized_columns.add(key)
+                remaining -= width
+                pending.remove(c)
         self._fitColumnsToViewport()
-        self._freeze_column_widths = True
+        self._column_width_save_timer.start()
 
     # --------------------------------------------------------
     # Filter options dialog and state
@@ -4646,58 +4608,80 @@ class FilePanel(QWidget):
     # Purpose: Placeholder, banner, clear buttons, and highlight
     #          when any filter/search is restricting the list.
     # --------------------------------------------------------
+    def _scheduleListingUi(self, *args):
+        if getattr(self, "_listing_ui_pending", False):
+            return
+        self._listing_ui_pending = True
+        QTimer.singleShot(0, self._refreshListingUi)
+
+    def _refreshListingUi(self):
+        self._listing_ui_pending = False
+        self._updateFilterUi()
+
+    def _positionEmptyState(self):
+        if not hasattr(self, "_empty_widget"):
+            return
+        viewport = self._table.viewport().rect()
+        width = min(320, max(1, viewport.width() - 12))
+        self._empty_widget.resize(width, self._empty_widget.sizeHint().height())
+        self._empty_widget.move((viewport.width() - width) // 2,
+                                max(0, (viewport.height() - self._empty_widget.height()) // 2))
+
+    def _onEmptyAction(self):
+        self.activated.emit()
+        if self._empty_action.text() == "Clear filter":
+            self.clearFilter()
+        else:
+            self.refresh(force_rescan=True)
+        self._table.setFocus()
+
     def _updateFilterUi(self):
         active = self._hasActiveFilter()
-        summary = self._filterActiveSummary() if active else ""
         total = self._source_model.rowCount()
-        shown = self._proxy_model.rowCount() if active else total
-        hidden = max(0, total - shown)
-
-        hint = []
-        mode = self._proxy_model.filterMode()
-        kind = self._proxy_model.entryKindFilter()
-        if mode == "wildcard":
-            hint.append("* ?")
-        elif mode == "regex":
-            hint.append("regex")
-        if kind == "dirs":
-            hint.append("folders")
-        elif kind == "files":
-            hint.append("files")
-        if self._source_model.isRecursive():
-            hint.append("subfolders")
-        if self._proxy_model.filterExcludeText().strip():
-            hint.append("exclude")
-        if self._proxy_model.filterExtensionsText().strip():
-            hint.append("ext")
-        if parse_filter_terms(self._filter_edit.text()):
-            if self._proxy_model.filterWordsCombineAnd():
-                hint.append("AND")
+        shown = self._proxy_model.rowCount()
+        loading = self._source_model.isLoading() or self._recursive_loading
+        error = self._source_model.loadError()
+        path = self._source_model.currentPath()
+        message = ""
+        detail = ""
+        action = ""
+        if path and shown == 0:
+            if loading:
+                message = "Scanning subfolders…" if self._recursive_loading else "Loading folder…"
+            elif error:
+                message, detail, action = "Can’t read this folder", error, "Retry"
+            elif self._recursive_cancelled:
+                message, action = "Subfolder scan cancelled", "Retry"
+            elif active and total:
+                message, action = "No items match", "Clear filter"
             else:
-                hint.append("OR")
-        spec = self._proxy_model.filterSpec()
-        if spec is not None and not spec.is_empty():
-            hint.append("size/date")
-        extra = (" · " + ", ".join(hint)) if hint else ""
-        if active:
-            self._filter_edit.setPlaceholderText(f"\u26A0 Filter active{extra}…")
-        else:
-            self._filter_edit.setPlaceholderText(f"\U0001F50D Filter{extra}…")
-
-        self._btn_clear_filter.setVisible(active)
+                message = "This folder is empty"
+        if self._empty_action.hasFocus() and (not message or not action):
+            self._table.setFocus()
+        self._empty_label.setText(message)
+        self._empty_detail.setText(detail)
+        self._empty_detail.setVisible(bool(detail))
+        self._empty_action.setText(action)
+        self._empty_action.setVisible(bool(action))
+        self._empty_widget.setVisible(bool(message))
+        if message:
+            self._positionEmptyState()
+            self._empty_widget.raise_()
+        self._filter_edit.setPlaceholderText("Filter by name…")
         self._filter_banner.setVisible(active)
         if active:
-            if hidden > 0:
-                banner = (
-                    f"\u26A0 Filter active ({summary}) — "
-                    f"{hidden} item(s) hidden ({shown} of {total} visible)"
-                )
-            else:
-                banner = f"\u26A0 Filter active ({summary})"
-            self._filter_banner_label.setText(banner)
-
-        _setDynamicProperty(self._filter_edit, "filterActive", active)
-        _setDynamicProperty(self._btn_filter_options, "filterActive", active)
+            parts = ["Filter active" if loading and not total else f"{shown} of {total} shown"]
+            if self._source_model.isRecursive():
+                parts.append("Includes subfolders")
+            kind = self._proxy_model.entryKindFilter()
+            if kind in ("files", "dirs"):
+                parts.append("Files only" if kind == "files" else "Folders only")
+            text = " · ".join(parts)
+            available = max(20, self._filter_banner_label.width())
+            self._filter_banner_label.setText(self._filter_banner_label.fontMetrics().elidedText(text, Qt.ElideRight, available))
+            self._filter_banner_label.setToolTip(self._filterActiveSummary())
+        self._filter_banner_btn.setVisible(active and action != "Clear filter")
+        self._btn_clear_filter.hide()
         self._updateStatusLabel()
 
     def _onFilterChanged(self, text):
@@ -4740,6 +4724,9 @@ class FilePanel(QWidget):
         self._btn_up.setEnabled(bool(parent) and parent != current)
 
     def _updateStatusLabel(self):
+        if self._path_error:
+            self._status_label.setText(self._path_error)
+            return
         if self._source_model.isLoading():
             self._status_label.setText("Loading folder\u2026")
             _setDynamicProperty(self._status_label, "filterWarning", False)
@@ -4752,17 +4739,6 @@ class FilePanel(QWidget):
         files = total - dirs
         text = f"{files} file(s), {dirs} folder(s)"
         filter_warning = False
-        if self._hasActiveFilter():
-            shown = self._proxy_model.rowCount()
-            hidden = max(0, total - shown)
-            if hidden > 0:
-                filter_warning = True
-                text = (
-                    f"\u26A0 {hidden} hidden \u00b7 {shown} shown \u00b7 "
-                    f"{files} file(s), {dirs} folder(s) in folder"
-                )
-            else:
-                text = f"Filter on \u00b7 {text}"
         if self.isInArchive():
             text += "  \u00b7  Archive"
         if self._source_model.isRecursive() and not self.isInArchive():
@@ -4793,6 +4769,8 @@ class FilePanel(QWidget):
         self._closeScanProgress()
         thr = self._scan_thread
         self._scan_thread = None
+        self._recursive_loading = False
+        self._recursive_cancelled = False
         if thr is None:
             return
         retireThread(thr, self._retired_threads)
@@ -4812,6 +4790,8 @@ class FilePanel(QWidget):
 
         # No parent: a running thread must not be destroyed with the
         # panel. shutdownBackgroundWork waits, then detaches leftovers.
+        self._recursive_loading = True
+        self._recursive_cancelled = False
         self._scan_thread = RecursiveScanThread(
             gen,
             path,
@@ -4820,7 +4800,9 @@ class FilePanel(QWidget):
         self._scan_thread.progress.connect(self._onRecursiveScanProgress)
         self._scan_thread.finishedScan.connect(self._onRecursiveScanFinished)
         self._scan_thread.scanCancelled.connect(self._onRecursiveScanCancelled)
+        self._scan_thread.scanFailed.connect(self._onRecursiveScanFailed)
         self._scan_thread.start()
+        self._scheduleListingUi()
         if quiet:
             self._updateStatusLabel()
 
@@ -4842,6 +4824,8 @@ class FilePanel(QWidget):
         if gen != self._source_model._scan_generation:
             return
         self._closeScanProgress()
+        self._recursive_loading = False
+        self._recursive_cancelled = False
         self._source_model.applyRecursiveScanResult(gen, entries)
         self._proxy_model.invalidateFilter()
         self._updateFilterUi()
@@ -4849,6 +4833,18 @@ class FilePanel(QWidget):
         self._scan_thread = None
         if thr is not None:
             thr.deleteLater()
+
+    def _onRecursiveScanFailed(self, gen, error):
+        if gen != self._source_model._scan_generation:
+            return
+        self._closeScanProgress()
+        self._recursive_loading = False
+        self._source_model._load_error = error
+        self._scheduleListingUi()
+        thread = self._scan_thread
+        self._scan_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _restoreCachedListingAfterCancel(self):
         """Put the last cached subfolder listing back when a scan is cancelled."""
@@ -4870,12 +4866,14 @@ class FilePanel(QWidget):
         if gen != self._source_model._scan_generation:
             return
         self._closeScanProgress()
+        self._recursive_loading = False
+        self._recursive_cancelled = True
         # Quiet reconcile cancel: keep cached listing visible.
         if self._source_model.listingFromCache():
             self._source_model._quiet_scan = False
         else:
             self._restoreCachedListingAfterCancel()
-        self._updateStatusLabel()
+        self._scheduleListingUi()
         if self._scan_thread is None:
             return
         thr = self._scan_thread
@@ -4958,7 +4956,7 @@ class FilePanel(QWidget):
             self.setObjectName("filePanel")
         style = self.style()
         if style is not None:
-            for w in (self, self._path_edit, self._table):
+            for w in (self, self._path_edit, self._breadcrumbs, self._table):
                 style.unpolish(w)
                 style.polish(w)
         self.update()

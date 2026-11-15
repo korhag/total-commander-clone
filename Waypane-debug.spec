@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Console build for one-shot diagnosis (stderr visible). Run:
-#   py -3 -m PyInstaller --noconfirm --clean --distpath dist_build TotalCommanderClone-debug.spec
+#   py -3 -m PyInstaller --noconfirm --clean --distpath dist_build Waypane-debug.spec
 import os
 
 
@@ -52,7 +52,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='TotalCommanderClone-debug',
+    name='Waypane-debug',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -63,7 +63,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['file-explorer.ico'],
+    icon=[next(path for path in ('icons/branding/waypane.ico', 'icons/branding/waypane.png', 'file-explorer.ico') if os.path.isfile(path))],
 )
 coll = COLLECT(
     exe,
@@ -72,5 +72,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='TotalCommanderClone-debug',
+    name='Waypane-debug',
 )

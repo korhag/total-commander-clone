@@ -207,6 +207,7 @@ class RecursiveScanThread(QThread):
     progress = pyqtSignal(int, str)
     finishedScan = pyqtSignal(int, list)
     scanCancelled = pyqtSignal(int)
+    scanFailed = pyqtSignal(int, str)
 
     _PROGRESS_INTERVAL_SEC = 0.25
     _PROGRESS_EVERY_ITEMS = 4096
@@ -237,8 +238,12 @@ class RecursiveScanThread(QThread):
                 self.progress.emit(item_count, current_dir)
                 last_emit = now
 
+        def on_error(error):
+            if os.path.normcase(os.path.normpath(error.filename or "")) == os.path.normcase(root):
+                raise error
+
         try:
-            for dirpath, dirnames, filenames in os.walk(root):
+            for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
                 if self._cancel:
                     self.scanCancelled.emit(self._scan_id)
                     return
@@ -282,8 +287,9 @@ class RecursiveScanThread(QThread):
 
                 maybe_emit(dirpath)
 
-        except (OSError, PermissionError):
-            pass
+        except OSError as error:
+            self.scanFailed.emit(self._scan_id, error.strerror or str(error))
+            return
 
         if self._cancel:
             self.scanCancelled.emit(self._scan_id)

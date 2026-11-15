@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Startup update check
+Waypane - Startup update check
 Compare local APP_VERSION to the public GitHub repo (and/or local git remote)
 and optionally launch scripts/update-and-rebuild.bat (pull + build).
 
@@ -243,7 +243,7 @@ def fetchPublicAppVersionViaHttps(branch: str = PUBLIC_DEFAULT_BRANCH) -> Tuple[
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "TotalCommanderClone-Updater"},
+                headers={"User-Agent": "Waypane-Updater"},
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
@@ -696,7 +696,7 @@ def launchUpdateAndRebuild(repo_root: str) -> Tuple[bool, str]:
                     "cmd.exe",
                     "/c",
                     "start",
-                    "Total Commander Clone — Update",
+                    "Waypane — Update",
                     "cmd.exe",
                     "/c",
                     bat,

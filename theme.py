@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Theme stylesheets
+Waypane - Theme stylesheets
 Hand-tuned palettes, Omarchy palettes (dark and light), plus Light and
 system styles. Sizes follow font size and interface density.
 """
@@ -925,6 +925,10 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     QPushButton#filterRefreshButton:pressed {{
         background-color: {accent_40};
     }}
+    QWidget#fileListEmptyState {{
+        background-color: {c['panel_bg']};
+        color: {c['text']};
+    }}
     QWidget#panelFilterBanner {{
         background-color: {red_12};
         border: 2px solid {c['red']};
@@ -1409,6 +1413,12 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         color: {c['text']};
         border-bottom: 2px solid {c['active_border']};
     }}
+    QTabBar#panelTabBar::tab:selected {{
+        border-bottom: 2px solid {c['border']};
+    }}
+    QTabBar#panelTabBar[paneActive="true"]::tab:selected {{
+        border-bottom: 2px solid {c['active_border']};
+    }}
     QTabBar::tab:hover {{
         background-color: {c['surface0']};
         color: {c['text']};
@@ -1488,6 +1498,23 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     }}
 
     /* Active panel: orange ring on address bar + file table (path + panelFileTable) */
+    QWidget#breadcrumbBar {{
+        background-color: {c['base']};
+        border: 1px solid {c['border']};
+        border-radius: {m['radius']}px;
+    }}
+    QWidget#filePanelActive QWidget#breadcrumbBar {{
+        border: 1px solid {c['panel_focus_ring']};
+    }}
+    QWidget#breadcrumbBar QToolButton {{
+        border: none;
+        background: transparent;
+        color: {c['text']};
+        padding: 2px 3px;
+    }}
+    QWidget#breadcrumbBar QToolButton:hover, QWidget#breadcrumbBar QToolButton:focus {{
+        background: {c['surface0']};
+    }}
     QWidget#filePanel QLineEdit#panelPathEdit {{
         border: 1px solid {c['border']};
     }}
@@ -1502,12 +1529,16 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
     }}
 
     QWidget#filePanel QTableView#panelFileTable {{
-        border: none;
+        border: 1px solid transparent;
         border-radius: {m['radius_lg']}px;
     }}
     QWidget#filePanelActive QTableView#panelFileTable {{
         border: 1px solid {c['panel_focus_ring']};
         border-radius: {m['radius_lg']}px;
+    }}
+
+    QTableView#panelFileTable:focus, QLineEdit#panelFilterEdit:focus {{
+        border: 1px solid {c['active_border']};
     }}
 
     /* ====================================================== */

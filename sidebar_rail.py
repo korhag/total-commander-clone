@@ -1,12 +1,12 @@
 """
-Total Commander Clone - Thin stand-in for the bookmarks sidebar.
+Waypane - Thin stand-in for the bookmarks sidebar.
 
 Shown when the window is narrow, or when the user hides the sidebar.
 A click opens the sidebar on that tab.
 """
 
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QFrame, QToolButton, QVBoxLayout
 
 from responsive_layout import SIDEBAR_RAIL_WIDTH
@@ -43,6 +43,7 @@ class SidebarRail(QFrame):
         layout.addWidget(self._bookmarks)
         layout.addWidget(self._libraries)
         layout.addStretch(1)
+        self.refreshIcons()
 
     # --------------------------------------------------------
     # Method: _makeButton
@@ -58,20 +59,26 @@ class SidebarRail(QFrame):
         button.setAutoRaise(True)
         button.setFocusPolicy(Qt.NoFocus)
         button.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        icon = QIcon()
-        for name in icon_names:
-            icon = QIcon.fromTheme(name)
-            if not icon.isNull():
-                break
-        if icon.isNull():
-            button.setText(label[:1])
-            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        else:
-            button.setIcon(icon)
+        button.setAccessibleName(label)
         button.clicked.connect(
             lambda checked, tab_index=index: self.tabRequested.emit(tab_index)
         )
         return button
+
+    def refreshIcons(self):
+        from action_icons import iconForAction
+        from theme import themeColor
+
+        self._bookmarks.setIcon(iconForAction("bookmark"))
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(themeColor("text", "#cdd6f4")), 2))
+        painter.drawRoundedRect(4, 7, 20, 16, 2, 2)
+        painter.drawRoundedRect(9, 12, 19, 14, 2, 2)
+        painter.end()
+        self._libraries.setIcon(QIcon(pixmap))
 
     # --------------------------------------------------------
     # Method: applyUiMetrics

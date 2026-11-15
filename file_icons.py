@@ -1,5 +1,5 @@
 """
-Total Commander Clone - File list icons
+Waypane - File list icons
 
 Nine icons are cut from the sheet in icons/. Folders are drawn and
 filled with the theme accent, because the folder on that sheet is a

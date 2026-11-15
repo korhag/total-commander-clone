@@ -1,5 +1,5 @@
 """
-Total Commander Clone - Image thumbnail loader
+Waypane - Image thumbnail loader
 
 Loads small previews for image files Qt can read. Decoding runs on a
 background pool so a folder of photos does not freeze the file list.
