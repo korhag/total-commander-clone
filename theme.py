@@ -1441,7 +1441,7 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         background-color: {c['button_hover']};
         border: 1px solid {c['active_border']};
     }}
-    QToolButton#panelTabAddButton {{
+    QToolButton#panelTabAddButton, QToolButton#showBothPanesButton {{
         background-color: {c['mantle']};
         color: {c['text']};
         border: 1px solid {c['border']};
@@ -1453,13 +1453,13 @@ def getThemeStylesheet(palette, font_size_pt=10, metrics=None):
         font-weight: bold;
         min-width: 0px;
     }}
-    QToolButton#panelTabAddButton:hover {{
+    QToolButton#panelTabAddButton:hover, QToolButton#showBothPanesButton:hover {{
         background-color: {c['surface0']};
         color: {c['text']};
         border: 1px solid {c['border']};
         border-bottom: none;
     }}
-    QToolButton#panelTabAddButton:pressed {{
+    QToolButton#panelTabAddButton:pressed, QToolButton#showBothPanesButton:pressed {{
         background-color: {c['base']};
         color: {c['text']};
     }}

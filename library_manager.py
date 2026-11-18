@@ -5,11 +5,13 @@ used to filter the active library. A hidden marker in each root lets
 the same folder be found again when a drive letter or mount point changes.
 """
 
+import copy
 import json
 import os
 import string
 import unicodedata
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 
 from app_version import APP_VERSION
@@ -279,16 +281,18 @@ def readLibraryMarker(root_path):
 # Function: findMarkerDirectories
 # Purpose: Breadth-first search for marker files under a base path.
 # ------------------------------------------------------------
-def findMarkerDirectories(base_path, max_depth=2, max_directories=250):
+def findMarkerDirectories(base_path, max_depth=2, max_directories=250, cancel_check=None):
     if not base_path or not os.path.isdir(base_path):
         return []
 
     results = []
-    queue = [(base_path, 0)]
+    queue = deque([(base_path, 0)])
     seen = set()
 
     while queue and len(seen) < max_directories:
-        current_path, depth = queue.pop(0)
+        if cancel_check and cancel_check():
+            break
+        current_path, depth = queue.popleft()
         norm_current = normalizePath(current_path)
         if norm_current in seen:
             continue
@@ -304,6 +308,8 @@ def findMarkerDirectories(base_path, max_depth=2, max_directories=250):
         try:
             with os.scandir(current_path) as entries:
                 for entry in entries:
+                    if cancel_check and cancel_check():
+                        return results
                     if not entry.is_dir(follow_symlinks=False):
                         continue
                     name = entry.name
@@ -745,7 +751,7 @@ class LibraryManager:
     # Purpose: Folders in one library that match the field filters.
     #          No filters returns every folder that has values.
     # --------------------------------------------------------
-    def findFolders(self, library_id="", filters=None):
+    def findFolders(self, library_id="", filters=None, *, folder_availability=None):
         active = {}
         for field_id, terms in (filters or {}).items():
             usable = [term for term in (terms or []) if str(term).strip()]
@@ -778,7 +784,12 @@ class LibraryManager:
             rel_path = storeRelativePath(record.get("relative_path", ""))
             root_path = normalizePath(root.get("path", "")) if root.get("is_available") else ""
             resolved_path = joinRoot(root_path, rel_path) if root_path else ""
-            available = bool(root_path) and os.path.isdir(resolved_path or root_path)
+            available = bool(root_path)
+            if available:
+                path = resolved_path or root_path
+                available = (
+                    os.path.isdir(path) if folder_availability is None else folder_availability.get(path, True)
+                )
             display_name = os.path.basename(resolved_path or rel_path) or library.get("name", "Folder")
 
             field_defs = {field.get("id"): field for field in library.get("fields", [])}
@@ -885,7 +896,7 @@ class LibraryManager:
     #          call reports a conflict and changes nothing.
     #          After a successful import, roots are scanned.
     # --------------------------------------------------------
-    def importLibrary(self, path, replace=False):
+    def importLibrary(self, path, replace=False, *, refresh=True):
         data = self._readLibraryExport(path)
         if data is None:
             return None
@@ -992,7 +1003,8 @@ class LibraryManager:
                 "note": note,
             }
         self._saveFolderTags(folder_tags)
-        self.refreshLibraries()
+        if refresh:
+            self.refreshLibraries()
         restored = self._findLibrary(library_id)
         return {
             "conflict": False,
@@ -1005,20 +1017,35 @@ class LibraryManager:
     #          repair paths when marker files are rediscovered.
     # --------------------------------------------------------
     def refreshLibraries(self):
-        libraries = self.getLibraries()
-        discovered = self._discoverMarkers(libraries)
+        snapshot = copy.deepcopy(self.getLibraries())
+        return self.applyLibraryDiscovery(snapshot, self.discoverLibraryRoots(snapshot))
+
+    def applyLibraryDiscovery(self, snapshot, discovered):
+        """Apply a scan to roots that still have the paths it checked."""
+        scanned_paths = {
+            (library.get("id", ""), root.get("id", "")): root.get("path", "")
+            for library in snapshot for root in library.get("roots", [])
+        }
+        libraries = copy.deepcopy(self.getLibraries())
+        changed = False
 
         for library in libraries:
             for root in library.get("roots", []):
                 key = (library.get("id", ""), root.get("id", ""))
+                if key not in scanned_paths or scanned_paths[key] != root.get("path", ""):
+                    continue
                 resolved_path = discovered.get(key, "")
-                root["is_available"] = bool(resolved_path and os.path.isdir(resolved_path))
+                updated = {"is_available": bool(resolved_path)}
                 if resolved_path:
-                    root["path"] = resolved_path
-                    root["last_seen_path"] = resolved_path
+                    updated.update(path=resolved_path, last_seen_path=resolved_path)
+                if any(root.get(name) != value for name, value in updated.items()):
+                    root.update(updated)
+                    changed = True
 
-        self._saveLibraries(libraries)
-        self._refreshResolvedFolderPaths()
+        if changed:
+            self._settings.setLibraries(libraries)
+        if self._updateResolvedFolderPaths() or changed:
+            self._settings.saveState()
         return libraries
 
     # --------------------------------------------------------
@@ -1176,7 +1203,12 @@ class LibraryManager:
     # Internal: reconcile folder paths after a root moves
     # --------------------------------------------------------
     def _refreshResolvedFolderPaths(self):
-        folder_tags = self.getFolderTags()
+        if self._updateResolvedFolderPaths():
+            self._settings.saveState()
+
+    def _updateResolvedFolderPaths(self):
+        folder_tags = copy.deepcopy(self.getFolderTags())
+        changed = False
         roots_by_key = {}
         for library in self.getLibraries():
             for root in library.get("roots", []):
@@ -1188,23 +1220,30 @@ class LibraryManager:
             root = roots_by_key.get((record.get("library_id", ""), record.get("root_id", "")))
             if root is None:
                 continue
-            record["relative_path"] = storeRelativePath(record.get("relative_path", ""))
+            relative = storeRelativePath(record.get("relative_path", ""))
             if root.get("is_available") and root.get("path"):
-                record["resolved_path"] = joinRoot(root.get("path", ""), record["relative_path"])
+                resolved = joinRoot(root["path"], relative)
             else:
-                record["resolved_path"] = ""
+                resolved = ""
+            if record.get("relative_path") != relative or record.get("resolved_path") != resolved:
+                record.update(relative_path=relative, resolved_path=resolved)
+                changed = True
 
-        self._saveFolderTags(folder_tags)
+        if changed:
+            self._settings.setFolderTags(folder_tags)
+        return changed
 
     # --------------------------------------------------------
     # Internal: discover roots by saved path and marker scans
     # --------------------------------------------------------
-    def _discoverMarkers(self, libraries):
+    def discoverLibraryRoots(self, libraries, cancel_check=None):
         discovered = {}
         missing_keys = set()
 
         for library in libraries:
             for root in library.get("roots", []):
+                if cancel_check and cancel_check():
+                    return {}
                 key = (library.get("id", ""), root.get("id", ""))
                 root_path = normalizePath(root.get("path", ""))
                 marker = readLibraryMarker(root_path) if root_path and os.path.isdir(root_path) else None
@@ -1217,7 +1256,9 @@ class LibraryManager:
             return discovered
 
         for base_path in self._candidateScanBases():
-            for candidate_path, marker in findMarkerDirectories(base_path):
+            if cancel_check and cancel_check():
+                return {}
+            for candidate_path, marker in findMarkerDirectories(base_path, cancel_check=cancel_check):
                 key = (marker.get("library_id", ""), marker.get("root_id", ""))
                 if key in missing_keys:
                     discovered[key] = normalizePath(candidate_path)

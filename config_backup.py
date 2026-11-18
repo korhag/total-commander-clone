@@ -257,6 +257,8 @@ def writeConfigBackup(
             "saved_library_filters": (state or {}).get("saved_library_filters", []),
             "saved_file_filters": (state or {}).get("saved_file_filters", []),
             "sidebar_state": (state or {}).get("sidebar_state", {}),
+            "bookmarks_panel_width": (state or {}).get("bookmarks_panel_width", 260),
+            "pane_layout": (state or {}).get("pane_layout", "both"),
             "recent_paths": (state or {}).get("recent_paths", []),
             "left_panel": (state or {}).get("left_panel", {}),
             "right_panel": (state or {}).get("right_panel", {}),

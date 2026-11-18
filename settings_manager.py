@@ -31,6 +31,8 @@ PROFILE_STATE_KEYS = (
     "saved_library_filters",
     "saved_file_filters",
     "sidebar_state",
+    "bookmarks_panel_width",
+    "pane_layout",
     "recent_paths",
     "left_panel",
     "right_panel",
@@ -91,6 +93,7 @@ DEFAULT_SETTINGS = {
 # These are written to state.json on first run.
 # ------------------------------------------------------------
 DEFAULT_STATE = {
+    "pane_layout": "both",
     "left_panel": {
         "current_path": "",
         "history": [],
@@ -138,6 +141,7 @@ DEFAULT_STATE = {
         "hidden": False,
         "active_library_id": "",
     },
+    "bookmarks_panel_width": 260,
 }
 
 
@@ -405,6 +409,13 @@ class SettingsManager:
     def getFullState(self):
         return self._state
 
+    def getPaneLayout(self):
+        layout = self._state.get("pane_layout")
+        return layout if layout in ("both", "left", "right") else "both"
+
+    def setPaneLayout(self, layout):
+        self._state["pane_layout"] = layout if layout in ("both", "left", "right") else "both"
+
     # --------------------------------------------------------
     # Panel State Helpers
     # --------------------------------------------------------
@@ -443,11 +454,14 @@ class SettingsManager:
             self._bookmarks_explicit_clear = self._countBookmarks(self._state["bookmarks"]) == 0
             self.saveState()
 
-    def addBookmark(self, name, path):
+    def addBookmark(self, name, path, kind=None):
         structure = self.getBookmarksStructure()
         if self._findBookmarkByPath(structure, path) is not None:
             return
-        structure.append({"type": "bookmark", "name": name, "path": path})
+        bookmark = {"type": "bookmark", "name": name, "path": path}
+        if kind in ("file", "folder"):
+            bookmark["kind"] = kind
+        structure.append(bookmark)
         self.setBookmarksStructure(structure, user_edit=True)
 
     def _findBookmarkByPath(self, structure, path):
@@ -582,7 +596,8 @@ class SettingsManager:
         self._state["saved_file_filters"] = filters or []
 
     def getSidebarState(self):
-        return self._state.get("sidebar_state", DEFAULT_STATE.get("sidebar_state", {}))
+        value = self._state.get("sidebar_state")
+        return value if isinstance(value, dict) else DEFAULT_STATE["sidebar_state"].copy()
 
     def setSidebarState(self, sidebar_state):
         self._state["sidebar_state"] = self._deepMerge(
@@ -707,6 +722,8 @@ class SettingsManager:
 
         applied_state_keys = []
         if isinstance(state, dict):
+            if "pane_layout" not in state:
+                self.setPaneLayout("both")
             for key in PROFILE_STATE_KEYS:
                 if key not in state:
                     continue
@@ -717,6 +734,8 @@ class SettingsManager:
                 elif key == "bookmarks":
                     value = self._normalizeBookmarkNodes(value if isinstance(value, list) else [])
                     self._state[key] = value
+                elif key == "pane_layout":
+                    self.setPaneLayout(value)
                 else:
                     self._state[key] = value
                 if key == "bookmarks":

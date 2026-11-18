@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime
 
 
@@ -110,6 +111,9 @@ ARCHIVE_PREVIEW_MAX_BYTES = 32 * 1024 * 1024
 _PERCENT_RE = re.compile(r"(\d{1,3})%")
 _LISTING_CACHE = {}
 _LISTING_CACHE_MAX = 8
+_LISTING_CACHE_LOCK = threading.Lock()
+_VIEW_CACHE_LOCK = threading.Lock()
+_VIEW_CACHE_GENERATION = 0
 _PASSWORDS = {}
 _EXE_CACHE = None
 _EXE_CHECKED = False
@@ -198,12 +202,12 @@ def splitArchivePath(path):
     inner_parts = []
     current = normalized
     while current:
-        try:
-            is_file = os.path.isfile(current)
-        except OSError:
-            is_file = False
-        if is_file and archiveExtension(os.path.basename(current)):
-            return current, "/".join(reversed(inner_parts))
+        if archiveExtension(os.path.basename(current)):
+            try:
+                if os.path.isfile(current):
+                    return current, "/".join(reversed(inner_parts))
+            except OSError:
+                pass
         parent = os.path.dirname(current)
         if not parent or parent == current:
             return None
@@ -349,9 +353,10 @@ def setArchivePassword(archive_file, password):
 
 def dropArchiveListing(archive_file):
     key = _archiveKey(archive_file)
-    for cached in list(_LISTING_CACHE):
-        if cached and cached[0] == key:
-            _LISTING_CACHE.pop(cached, None)
+    with _LISTING_CACHE_LOCK:
+        for cached in list(_LISTING_CACHE):
+            if cached[0] == key:
+                _LISTING_CACHE.pop(cached, None)
 
 
 # ------------------------------------------------------------
@@ -535,12 +540,12 @@ def _findNode(root, member):
 
 
 def _rememberListing(key, tree):
-    if key in _LISTING_CACHE:
+    with _LISTING_CACHE_LOCK:
         _LISTING_CACHE.pop(key, None)
-    _LISTING_CACHE[key] = tree
-    while len(_LISTING_CACHE) > _LISTING_CACHE_MAX:
-        oldest = next(iter(_LISTING_CACHE))
-        _LISTING_CACHE.pop(oldest, None)
+        _LISTING_CACHE[key] = tree
+        while len(_LISTING_CACHE) > _LISTING_CACHE_MAX:
+            oldest = next(iter(_LISTING_CACHE))
+            _LISTING_CACHE.pop(oldest, None)
 
 
 # ------------------------------------------------------------
@@ -773,19 +778,27 @@ def _listWrappedTar(archive_file, password):
     return 0, text
 
 
-def run7z(args, cwd=None, timeout=120):
+def run7z(args, cwd=None, timeout=120, cancel_check=None):
     """Run 7-Zip to completion. Returns (code, output). code is None on launch failure."""
     try:
         proc = popen7z(args, cwd=cwd)
     except ArchiveToolError as exc:
         return None, str(exc)
-    try:
-        stdout, _stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _killProcess(proc)
-        return 1, "7-Zip timed out."
-    text = (stdout or b"").decode("utf-8", errors="replace")
-    return proc.returncode, text
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_check is not None and cancel_check():
+            _killProcess(proc)
+            return 1, "Archive read cancelled."
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _killProcess(proc)
+            return 1, "7-Zip timed out."
+        try:
+            wait = min(remaining, 0.1) if cancel_check is not None else remaining
+            stdout, _stderr = proc.communicate(timeout=wait)
+        except subprocess.TimeoutExpired:
+            continue
+        return proc.returncode, (stdout or b"").decode("utf-8", errors="replace")
 
 
 # ------------------------------------------------------------
@@ -805,7 +818,8 @@ def listArchive(archive_file, password="", cancel_check=None):
     used_password = password if password else getArchivePassword(archive_file)
     stamp = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
     key = (_archiveKey(archive_file), stamp, st.st_size, used_password)
-    cached = _LISTING_CACHE.get(key)
+    with _LISTING_CACHE_LOCK:
+        cached = _LISTING_CACHE.get(key)
     if cached is not None:
         return cached, ""
     if cancel_check is not None and cancel_check():
@@ -814,7 +828,7 @@ def listArchive(archive_file, password="", cancel_check=None):
     if archiveExtension(archive_file) in WRAPPED_TAR_EXTENSIONS:
         code, output = _listWrappedTar(archive_file, used_password)
     else:
-        code, output = run7z(buildListArgs(archive_file, used_password))
+        code, output = run7z(buildListArgs(archive_file, used_password), cancel_check=cancel_check)
     if cancel_check is not None and cancel_check():
         return None, ""
     if code is None:
@@ -871,9 +885,9 @@ def listArchiveFolder(path, show_hidden, cancel_check=None, password=""):
     return entries, ""
 
 
-def memberSize(archive_file, member, password=""):
+def memberSize(archive_file, member, password="", *, cancel_check=None):
     """Byte size of one member, or None when it is missing."""
-    tree, error = listArchive(archive_file, password=password)
+    tree, error = listArchive(archive_file, password=password, cancel_check=cancel_check)
     if error or tree is None:
         return None, error
     node = _findNode(tree, member)
@@ -902,7 +916,7 @@ def _cacheFolder(archive_file, member, password):
         size = 0
     token = f"{_archiveKey(archive_file)}|{stamp}|{size}|{member}|{password}"
     digest = hashlib.sha1(token.encode("utf-8", errors="replace")).hexdigest()[:20]
-    return os.path.join(archiveCacheDir(), digest)
+    return os.path.join(tempfile.gettempdir(), "tcc-archive-cache", f"preview-v2-{digest}")
 
 
 def cachedMemberPath(archive_file, member, password=""):
@@ -917,14 +931,16 @@ def cachedMemberPath(archive_file, member, password=""):
 #          max_bytes refuses large previews before 7-Zip runs.
 # Output: (path, error). error is "" on success.
 # ------------------------------------------------------------
-def extractToCache(archive_file, member, password="", max_bytes=None):
+def extractToCache(archive_file, member, password="", max_bytes=None, *, cancel_check=None):
     archive_file = os.path.normpath(archive_file)
     member = (member or "").replace("\\", "/").strip("/")
     if not member:
         return "", "Nothing to extract."
+    generation = _VIEW_CACHE_GENERATION
     used_password = password if password else getArchivePassword(archive_file)
+    out_path = cachedMemberPath(archive_file, member, used_password)
     if max_bytes is not None:
-        size, error = memberSize(archive_file, member, used_password)
+        size, error = memberSize(archive_file, member, used_password, cancel_check=cancel_check)
         if error:
             return "", error
         if size is not None and size > max_bytes:
@@ -933,22 +949,33 @@ def extractToCache(archive_file, member, password="", max_bytes=None):
                 "Extract it first."
             )
 
-    out_path = cachedMemberPath(archive_file, member, used_password)
+    if cancel_check is not None and cancel_check():
+        return "", "Archive read cancelled."
     if os.path.isfile(out_path):
         return out_path, ""
 
-    dest_dir = _cacheFolder(archive_file, member, used_password)
-    os.makedirs(dest_dir, exist_ok=True)
-    code, output = run7z(
-        buildExtractArgs(archive_file, dest_dir, members=[member], password=used_password)
-    )
-    if code is None:
-        return "", output or missing7zHint()
-    if os.path.isfile(out_path):
+    # Each request has private output until 7-Zip succeeds.
+    with tempfile.TemporaryDirectory(prefix="waypane-preview-") as stage:
+        code, output = run7z(
+            buildExtractArgs(archive_file, stage, members=[member], password=used_password),
+            cancel_check=cancel_check,
+        )
+        if code is None:
+            return "", output or missing7zHint()
+        if code != 0:
+            return "", _short7zError(output) or f"7-Zip failed (exit {code})."
+        completed = os.path.join(stage, *member.split("/"))
+        if not os.path.isfile(completed) or os.path.islink(completed):
+            return "", "Could not extract the file."
+        if max_bytes is not None and os.path.getsize(completed) > max_bytes:
+            return "", "This file is too large to preview from the archive."
+        with _VIEW_CACHE_LOCK:
+            if generation != _VIEW_CACHE_GENERATION or (cancel_check is not None and cancel_check()):
+                return "", "Archive read cancelled."
+            if not os.path.isfile(out_path):
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                os.replace(completed, out_path)
         return out_path, ""
-    if code != 0:
-        return "", _short7zError(output) or f"7-Zip failed (exit {code})."
-    return "", "Could not extract the file."
 
 
 # ------------------------------------------------------------
@@ -957,7 +984,7 @@ def extractToCache(archive_file, member, password="", max_bytes=None):
 #          into the temp cache, up to ARCHIVE_PREVIEW_MAX_BYTES.
 # Output: (path, error).
 # ------------------------------------------------------------
-def prepareViewPath(path):
+def prepareViewPath(path, *, cancel_check=None):
     split = splitArchivePath(path)
     if not split or not split[1]:
         return path, ""
@@ -966,15 +993,20 @@ def prepareViewPath(path):
         archive_file,
         member,
         max_bytes=ARCHIVE_PREVIEW_MAX_BYTES,
+        cancel_check=cancel_check,
     )
 
 
 def clearArchiveCache():
     """Delete extracted preview files. Called when the window closes."""
-    cache = os.path.join(tempfile.gettempdir(), "tcc-archive-cache")
-    shutil.rmtree(cache, ignore_errors=True)
+    global _VIEW_CACHE_GENERATION
+    with _VIEW_CACHE_LOCK:
+        _VIEW_CACHE_GENERATION += 1
+        cache = os.path.join(tempfile.gettempdir(), "tcc-archive-cache")
+        shutil.rmtree(cache, ignore_errors=True)
 
 
 def clearListingCache():
     """Drop parsed archive trees. Used by tests."""
-    _LISTING_CACHE.clear()
+    with _LISTING_CACHE_LOCK:
+        _LISTING_CACHE.clear()

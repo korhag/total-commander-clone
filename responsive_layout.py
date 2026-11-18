@@ -16,6 +16,7 @@ TIER_NARROW = "narrow"
 # Window
 # ------------------------------------------------------------
 MIN_WINDOW_WIDTH = 640
+MIN_SINGLE_PANE_WIDTH = 480
 MIN_WINDOW_HEIGHT = 460
 
 # A file panel narrower than this drops the text on Settings,

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Date Modified format**: Choose more date and time formats in Settings or from the Date Modified column header. Both panes use the saved choice.
+
+### Fixed
+
+- **Date Modified sorting**: Folders stay above files in either sort direction, with each group ordered by its full modification time.
+
+## [0.24.0] - 2026-11-18
+
+### Added
+
+- **Single file pane**: Right-click a tab to hide its pane, or use **View** to show either pane. The remaining pane can fit a 480-pixel window. Use **Show both panes** beside the new-tab button to bring the other pane back. Waypane remembers the layout.
+- **Transfers in one pane**: Press **F6** or **F7** to choose a destination folder and review the full path before queuing the transfer.
+
+### Changed
+
+- **Bookmarks and Libraries**: Collapse the sidebar to the icon rail from its tabs or the View menu. Waypane remembers the sidebar state and scans for library roots in the background when Libraries opens.
+- **Previews**: Quick View and the file viewer load files in the background and show progress while waiting for a preview.
+- **Transfer progress**: Copy and Move count each source once and respond to cancellation while sizing.
+
+### Fixed
+
+- **File safety**: A folder that cannot be read fails the transfer, keeps the source, and restores the previous destination. Failed archive previews leave no cached partial file. Offline bookmarks retain their saved type.
+
 ## [0.23.0] - 2026-11-15
 
 ### Added

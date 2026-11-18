@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -49,6 +50,18 @@ def _select_name(panel, name):
         panel.tableView().selectRow(proxy_index.row())
         return
     raise AssertionError(name)
+
+
+def _wait_until(predicate):
+    for _ in range(150):
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Preview did not finish")
+
+
+def _preview_text(viewer, expected):
+    return viewer._stack.currentWidget() is viewer._text and viewer._text.toPlainText() == expected
 
 
 # ------------------------------------------------------------
@@ -155,8 +168,60 @@ class TestViewerWindow(unittest.TestCase):
     def test_widget_shows_text(self):
         widget = FileViewerWidget()
         widget.showPath(os.path.join(self.root, "a.txt"))
-        self.assertIn("alpha", widget._text.toPlainText())
+        _wait_until(lambda: _preview_text(widget, "alpha"))
         widget.deleteLater()
+
+    def test_latest_selection_wins_without_queuing_intermediate_previews(self):
+        widget = FileViewerWidget()
+        first = os.path.join(self.root, "a.txt")
+        last = os.path.join(self.root, "b.txt")
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed(path):
+            if path == first:
+                started.set()
+                release.wait(2)
+            return buildPreview(path)
+
+        with mock.patch("file_viewer.buildPreview", side_effect=delayed) as read:
+            try:
+                widget.showPath(first)
+                _wait_until(started.is_set)
+                widget.showPath(os.path.join(self.root, "middle.txt"))
+                widget.showPath(last)
+                self.assertEqual(widget._title.text(), "b.txt")
+                self.assertIn("Loading", widget._message.text())
+                release.set()
+                _wait_until(lambda: _preview_text(widget, "bravo"))
+                self.assertEqual([call.args[0] for call in read.call_args_list], [first, last])
+            finally:
+                release.set()
+                widget.deleteLater()
+
+    def test_hiding_invalidates_an_in_progress_preview(self):
+        widget = FileViewerWidget()
+        widget.show()
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed(path):
+            started.set()
+            release.wait(2)
+            return buildPreview(path)
+
+        with mock.patch("file_viewer.buildPreview", side_effect=delayed):
+            try:
+                widget.showPath(os.path.join(self.root, "a.txt"))
+                _wait_until(started.is_set)
+                widget.hide()
+                release.set()
+                _wait_until(lambda: widget._thread is None)
+                self.assertEqual(widget.currentPath(), "")
+                self.assertIs(widget._stack.currentWidget(), widget._message)
+            finally:
+                release.set()
+                widget.deleteLater()
 
     def test_step_skips_folders(self):
         _select_name(self.panel, "a.txt")
@@ -165,7 +230,7 @@ class TestViewerWindow(unittest.TestCase):
         self.assertTrue(window.viewerWidget().currentPath().endswith("a.txt"))
         window._step(1)
         self.assertTrue(window.viewerWidget().currentPath().endswith("b.txt"))
-        self.assertIn("bravo", window.viewerWidget()._text.toPlainText())
+        _wait_until(lambda: _preview_text(window.viewerWidget(), "bravo"))
         window.close()
         window.deleteLater()
 
@@ -203,11 +268,11 @@ class TestQuickView(unittest.TestCase):
             self.window._right_quick_view,
         )
         self.assertTrue(self.window._right_quick_view.currentPath().endswith("one.txt"))
-        self.assertIn("one", self.window._right_quick_view._text.toPlainText())
+        _wait_until(lambda: _preview_text(self.window._right_quick_view, "one"))
 
         _select_name(left, "two.txt")
         self.assertTrue(self.window._right_quick_view.currentPath().endswith("two.txt"))
-        self.assertIn("two", self.window._right_quick_view._text.toPlainText())
+        _wait_until(lambda: _preview_text(self.window._right_quick_view, "two"))
 
         self.window._onToggleQuickView()
         self.assertIs(self.window._right_stack.currentWidget(), self.window._right_panel)

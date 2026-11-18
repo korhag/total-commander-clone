@@ -108,6 +108,7 @@ class PanelTabBar(QTabBar):
         self._states = [{}]
         self._current = 0
         self._guard = False
+        self.paneVisibilityAction = None
 
         self.setObjectName("panelTabBar")
         self.setDocumentMode(True)
@@ -309,7 +310,7 @@ class PanelTabBar(QTabBar):
         self._restoreCurrent()
 
     def mousePressEvent(self, event):
-        if self.tabAt(event.pos()) >= 0:
+        if event.button() == Qt.LeftButton and self.tabAt(event.pos()) >= 0:
             self.tabInteracted.emit()
         super().mousePressEvent(event)
 
@@ -340,6 +341,10 @@ class PanelTabBar(QTabBar):
     #          saved when you left it.
     # --------------------------------------------------------
     def folderForTab(self, index):
+        path = self._tabPath(index)
+        return path if path and os.path.isdir(path) else ""
+
+    def _tabPath(self, index):
         if isinstance(index, bool) or not isinstance(index, int):
             return ""
         if not (0 <= index < self.count()):
@@ -357,9 +362,7 @@ class PanelTabBar(QTabBar):
             path = os.path.normpath(path)
         except (OSError, ValueError):
             return ""
-        if os.path.isdir(path):
-            return path
-        return ""
+        return path
 
     # --------------------------------------------------------
     # Method: tabContextMenu
@@ -369,6 +372,9 @@ class PanelTabBar(QTabBar):
     def tabContextMenu(self, index):
         only_one = self.count() <= 1
         menu = QMenu(self)
+        if self.paneVisibilityAction is not None:
+            menu.addAction(self.paneVisibilityAction)
+            menu.addSeparator()
         new_action = menu.addAction("New Tab")
         new_action.setData("new")
         close_action = menu.addAction("Close Tab")
@@ -379,7 +385,9 @@ class PanelTabBar(QTabBar):
         others_action.setEnabled(index >= 0 and not only_one)
         if index >= 0:
             menu.addSeparator()
-            folder = self.folderForTab(index)
+            # Leave filesystem checks until the command is chosen. An
+            # offline drive should not delay opening the pane controls.
+            folder = self._tabPath(index)
             explorer_action = menu.addAction("Open in file manager")
             explorer_action.setData("explorer")
             explorer_action.setToolTip(
@@ -420,6 +428,7 @@ class PanelTabBar(QTabBar):
             folder = self.folderForTab(index)
             if folder:
                 self.openInTerminalRequested.emit(folder)
+        menu.deleteLater()
         event.accept()
 
     def _appendAndSwitch(self, state):

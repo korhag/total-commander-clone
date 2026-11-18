@@ -5,9 +5,11 @@ Archive paths, 7-Zip listing text, and extract/compress when 7-Zip is installed.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 from PyQt5.QtWidgets import QApplication
 
@@ -17,12 +19,15 @@ from archive_backend import (
     archiveDisplayStem,
     archiveExtension,
     buildArchiveTree,
+    cachedMemberPath,
     clearArchiveCache,
     clearListingCache,
     find7zExecutable,
+    extractToCache,
     listArchive,
     parseProgressPercent,
     parseSltRecords,
+    prepareViewPath,
     splitArchivePath,
 )
 from archive_operations import ArchiveCompressWorker, ArchiveExtractWorker
@@ -172,6 +177,28 @@ Encrypted = -
 # Purpose: List, extract, and compress with the real 7-Zip tool.
 #          Skipped on machines that do not have it installed.
 # ------------------------------------------------------------
+class TestPreviewCache(unittest.TestCase):
+    def test_failed_extraction_does_not_publish_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch("archive_backend.tempfile.gettempdir", return_value=directory):
+            archive = Path(directory, "sample.zip")
+            archive.touch()
+            member = "a.txt"
+
+            def write_preview(stage, **_kwargs):
+                Path(stage, member).write_bytes(b"partial")
+                return 2, "Extraction failed"
+
+            with mock.patch("archive_backend.buildExtractArgs", side_effect=lambda _archive, stage, **_kwargs: stage), \
+                    mock.patch("archive_backend.run7z", side_effect=write_preview) as extract:
+                for _ in range(2):
+                    path, error = extractToCache(str(archive), member)
+                    self.assertEqual(path, "")
+                    self.assertTrue(error)
+                    self.assertFalse(os.path.exists(cachedMemberPath(str(archive), member)))
+                self.assertEqual(extract.call_count, 2)
+
+
 @unittest.skipUnless(find7zExecutable(), "7-Zip is not installed")
 class TestArchiveRoundTrip(unittest.TestCase):
 
@@ -215,6 +242,14 @@ class TestArchiveRoundTrip(unittest.TestCase):
         self.assertTrue(messages[0][0], messages)
         self.assertEqual(open(os.path.join(dest, "b.txt"), encoding="utf-8").read(), "nested")
         self.assertFalse(os.path.exists(os.path.join(dest, "a.txt")))
+
+    def test_preview_reuses_successful_nested_extraction(self):
+        synthetic_path = os.path.join(self._sampleZip(), "sub", "b.txt")
+        path, error = prepareViewPath(synthetic_path)
+        self.assertFalse(error)
+        self.assertEqual(Path(path).read_text(encoding="utf-8"), "nested")
+        with mock.patch("archive_backend.run7z", side_effect=AssertionError("Extracted again")):
+            self.assertEqual(prepareViewPath(synthetic_path), (path, ""))
 
     def test_compress_zip_and_7z(self):
         folder = os.path.join(self.root, "src")

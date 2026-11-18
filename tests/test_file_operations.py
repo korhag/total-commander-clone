@@ -19,6 +19,7 @@ from file_operations import (
     FileOperationWorker,
     explainFileError,
     renameFile,
+    _pathByteSize,
 )
 
 
@@ -89,6 +90,42 @@ class TestFileOperationGuards(unittest.TestCase):
         dest = os.path.join(dest_dir, "note.txt")
         self.assertTrue(messages[0][0], messages)
         self.assertEqual(_read(dest), "hello")
+
+    def test_sizes_are_calculated_once_and_move_progress_keeps_processed_bytes(self):
+        dest = os.path.join(self.root, "out")
+        os.mkdir(dest)
+        paths = [os.path.join(self.root, f"{index}.txt") for index in range(20)]
+        for path in paths:
+            _write(path, "data")
+        worker = FileOperationWorker(FileOperationWorker.OPERATION_MOVE, paths, dest)
+        percentages = []
+        worker.progressChanged.connect(lambda percent, *_: percentages.append(percent))
+        with mock.patch("file_operations._pathByteSize", wraps=_pathByteSize) as size:
+            worker.run()
+            self.assertEqual([call.args[0] for call in size.call_args_list], paths)
+        self.assertEqual(percentages, sorted(percentages))
+        self.assertIn(50, percentages)
+        self.assertEqual(percentages[-1], 100)
+        self.assertEqual(len(os.listdir(dest)), len(paths))
+
+    def test_can_cancel_during_folder_sizing(self):
+        source, dest = os.path.join(self.root, "src"), os.path.join(self.root, "out")
+        _write(os.path.join(source, "a"), "data")
+        os.mkdir(dest)
+        worker = FileOperationWorker(FileOperationWorker.OPERATION_COPY, [source], dest)
+        message = []
+        worker.operationFinished.connect(lambda ok, detail: message.append((ok, detail)))
+
+        def walk(path):
+            worker.cancel()
+            yield path, [], ["a"]
+            self.fail("Sizing continued after cancellation")
+
+        with mock.patch("file_operations.os.walk", side_effect=walk):
+            worker.run()
+        self.assertFalse(message[0][0])
+        self.assertIn("cancelled", message[0][1].lower())
+        self.assertEqual(os.listdir(dest), [])
 
     def test_copy_errors_stay_on_one_line(self):
         dest_dir = os.path.join(self.root, "out")
@@ -220,6 +257,37 @@ class TestOverwriteSafety(unittest.TestCase):
         self.assertEqual(_read(self.source), "new")
         self.assertEqual(self._leftovers(), [])
 
+    def test_unreadable_subfolder_restores_destination_and_preserves_source(self):
+        for operation in ("copy", "move"):
+            with self.subTest(operation=operation):
+                bundle = os.path.join(self.root, operation)
+                old_bundle = os.path.join(self.dest_dir, operation)
+                _write(os.path.join(bundle, "new.txt"), "new")
+                _write(os.path.join(bundle, "unreadable", "keep.txt"), "source")
+                _write(os.path.join(old_bundle, "old.txt"), "previous")
+                worker = FileOperationWorker(operation, [bundle], self.dest_dir)
+                worker._apply_to_all_choice = CONFLICT_OVERWRITE
+                completed = []
+                worker.operationFinished.connect(lambda ok, detail: completed.append((ok, detail)))
+                real_walk = os.walk
+
+                def walk(path, onerror=None, **options):
+                    if path != bundle:
+                        yield from real_walk(path, onerror=onerror, **options)
+                        return
+                    yield path, ["unreadable"], ["new.txt"]
+                    if onerror:
+                        onerror(PermissionError("cannot read subfolder"))
+
+                with mock.patch("file_operations._sameVolume", return_value=False), \
+                        mock.patch("file_operations.os.walk", side_effect=walk):
+                    worker.run()
+                self.assertFalse(completed[0][0])
+                self.assertIn("cannot read subfolder", completed[0][1])
+                self.assertEqual(os.listdir(old_bundle), ["old.txt"])
+                self.assertEqual(_read(os.path.join(old_bundle, "old.txt")), "previous")
+                self.assertEqual(_read(os.path.join(bundle, "unreadable", "keep.txt")), "source")
+                self.assertEqual(self._leftovers(), [])
     def test_cancelled_copy_overwrite_keeps_existing_destination(self):
         worker, messages = self._worker(FileOperationWorker.OPERATION_COPY)
         real_copy = worker._copyFileWithProgress

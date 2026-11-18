@@ -8,16 +8,18 @@ for the Ctrl+Q quick-view pane.
 """
 
 import os
+import stat
 import subprocess
 import sys
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QThread, QTimer
 from PyQt5.QtGui import QFont, QImageReader, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QDialog,
     QLabel,
     QPlainTextEdit,
     QShortcut,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -33,6 +35,7 @@ TEXT_PREVIEW_LIMIT = 256 * 1024
 HEX_PREVIEW_LIMIT = 4096
 IMAGE_PREVIEW_LIMIT = 64 * 1024 * 1024
 IMAGE_PREVIEW_EDGE = 1600
+PREVIEW_DELAY_MS = 60
 
 
 # ------------------------------------------------------------
@@ -95,23 +98,22 @@ def formatHexDump(data):
 # Output: dict with kind missing, folder, image, text, hex, or error.
 # ------------------------------------------------------------
 def buildPreview(path):
-    if not path or not os.path.lexists(path):
+    try:
+        info = os.stat(path or "")
+    except (FileNotFoundError, NotADirectoryError):
         return {"kind": "missing", "path": path or "", "message": "File not found."}
-    if os.path.isdir(path):
+    except OSError as exc:
+        return {"kind": "error", "path": path, "message": exc.strerror or str(exc)}
+    if stat.S_ISDIR(info.st_mode):
         return {
             "kind": "folder",
             "path": path,
             "message": "Select a file to view.",
         }
-    try:
-        size = os.path.getsize(path)
-    except OSError as exc:
-        return {
-            "kind": "error",
-            "path": path,
-            "message": exc.strerror or str(exc),
-        }
+    if not stat.S_ISREG(info.st_mode):
+        return {"kind": "error", "path": path, "message": "This file type cannot be previewed."}
 
+    size = info.st_size
     name = os.path.basename(path)
     if isImageFileName(name):
         if size > IMAGE_PREVIEW_LIMIT:
@@ -214,12 +216,54 @@ def openInSystemEditor(path):
 # Purpose: Image, text, or hex preview. Used in the viewer
 #          window and in the quick-view pane.
 # ------------------------------------------------------------
+# Keep short-lived reads alive until they finish even if their widgets close.
+_preview_threads = set()
+
+
+def _releasePreviewThread(thread):
+    _preview_threads.discard(thread)
+    thread.deleteLater()
+
+
+class _PreviewThread(QThread):
+    def __init__(self, generation, path):
+        super().__init__()
+        self.generation = generation
+        self.path = path
+        self.preview = None
+        self.image = None
+
+    def run(self):
+        from archive_backend import prepareViewPath
+
+        if self.isInterruptionRequested():
+            return
+        try:
+            real_path, error = prepareViewPath(self.path, cancel_check=self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
+            if error or not real_path:
+                self.preview = {"kind": "error", "message": error or "Could not read this file from the archive."}
+                return
+            self.preview = buildPreview(real_path)
+            if self.preview["kind"] == "image" and not self.isInterruptionRequested():
+                self.image = loadPreviewImage(real_path)
+        except Exception as exc:
+            self.preview = {"kind": "error", "message": str(exc)}
+
+
 class FileViewerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._path = ""
         self._source_image = None
+        self._generation = 0
+        self._thread = None
+        self._pending = None
+        self._load_timer = QTimer(self)
+        self._load_timer.setSingleShot(True)
+        self._load_timer.timeout.connect(self._startPendingPreview)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -228,12 +272,14 @@ class FileViewerWidget(QWidget):
         self._title = QLabel("No file selected")
         self._title.setObjectName("viewerTitle")
         self._title.setWordWrap(True)
+        self._title.setTextFormat(Qt.PlainText)
         self._title.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self._title)
 
         self._image = QLabel()
         self._image.setAlignment(Qt.AlignCenter)
         self._image.setMinimumSize(32, 32)
+        self._image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
         self._text = QPlainTextEdit()
         self._text.setObjectName("viewerText")
@@ -244,6 +290,7 @@ class FileViewerWidget(QWidget):
         self._message = QLabel("No file selected")
         self._message.setAlignment(Qt.AlignCenter)
         self._message.setWordWrap(True)
+        self._message.setTextFormat(Qt.PlainText)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._message)
@@ -256,26 +303,51 @@ class FileViewerWidget(QWidget):
     # Purpose: Load and display one file.
     # --------------------------------------------------------
     def showPath(self, path):
-        self._path = path or ""
+        if not path:
+            self.clear()
+            return
+        if self._path == path:
+            return
+        self._cancelPreview()
+        self._path = path
         self._source_image = None
-        display_name = os.path.basename(self._path)
-        from archive_backend import pathInsideArchive, prepareViewPath
+        self._showMessage(os.path.basename(path) or "Viewer", "Loading preview…")
+        self._pending = (self._generation, path)
+        self._load_timer.start(PREVIEW_DELAY_MS)
 
-        if pathInsideArchive(self._path):
-            real, error = prepareViewPath(self._path)
-            if error or not real:
-                self._showMessage(
-                    display_name or "Viewer",
-                    error or "Could not read this file from the archive.",
-                )
-                return
-            self._path = real
-        preview = buildPreview(self._path)
+    def _cancelPreview(self):
+        self._generation += 1
+        self._load_timer.stop()
+        self._pending = None
+        if self._thread is not None:
+            self._thread.requestInterruption()
+
+    def _startPendingPreview(self):
+        if self._thread is not None or self._pending is None:
+            return
+        thread = _PreviewThread(*self._pending)
+        self._pending = None
+        self._thread = thread
+        _preview_threads.add(thread)
+        thread.finished.connect(self._onPreviewFinished)
+        thread.finished.connect(lambda: _releasePreviewThread(thread))
+        thread.start()
+
+    def _onPreviewFinished(self):
+        thread = self.sender()
+        if thread is not self._thread:
+            return
+        self._thread = None
+        if thread.generation == self._generation and thread.preview is not None:
+            self._applyPreview(thread.preview, thread.image)
+        if not self._load_timer.isActive():
+            self._startPendingPreview()
+
+    def _applyPreview(self, preview, image):
         kind = preview.get("kind")
         name = preview.get("name") or os.path.basename(self._path)
 
         if kind == "image":
-            image = loadPreviewImage(self._path)
             if image is None:
                 self._showMessage(name, "Could not read this image.")
                 return
@@ -304,9 +376,14 @@ class FileViewerWidget(QWidget):
     # Purpose: Empty state, used when no file is selected.
     # --------------------------------------------------------
     def clear(self, message="No file selected"):
+        self._cancelPreview()
         self._path = ""
         self._source_image = None
         self._showMessage("Viewer", message)
+
+    def hideEvent(self, event):
+        self.clear()
+        super().hideEvent(event)
 
     def currentPath(self):
         return self._path
@@ -379,19 +456,41 @@ class FileViewerWindow(QDialog):
     #          panel so N and P can move through its list.
     # --------------------------------------------------------
     def viewPanelFile(self, panel):
+        self._detachPanel()
         self._panel = panel
-        entry = panel.primaryFileEntry() if panel is not None else None
-        if entry is None:
-            self.setWindowTitle("Viewer")
-            self._viewer.clear("Select a file to view.")
-        else:
-            self._showEntry(entry)
+        if panel is not None:
+            panel.selectionChanged.connect(self._syncSelection)
+            panel.pathChanged.connect(self._syncSelection)
         self.show()
+        self._syncSelection()
         self.raise_()
         self.activateWindow()
 
     def viewerWidget(self):
         return self._viewer
+
+    def closeForPanel(self, panel):
+        if self._panel is panel:
+            self.close()
+
+    def _detachPanel(self):
+        if self._panel is not None:
+            self._panel.selectionChanged.disconnect(self._syncSelection)
+            self._panel.pathChanged.disconnect(self._syncSelection)
+            self._panel = None
+        self._viewer.clear()
+
+    def hideEvent(self, event):
+        self._detachPanel()
+        super().hideEvent(event)
+
+    def _syncSelection(self, *_args):
+        entry = self._panel.primaryFileEntry() if self._panel is not None else None
+        if entry is None:
+            self.setWindowTitle("Viewer")
+            self._viewer.clear("Select a file to view.")
+        else:
+            self._showEntry(entry)
 
     def _showEntry(self, entry):
         path = entry.get("full_path") or ""
@@ -400,9 +499,6 @@ class FileViewerWindow(QDialog):
         self._viewer.showPath(path)
 
     def _step(self, step):
-        panel = self._panel
-        if panel is None:
-            return
-        entry = panel.selectAdjacentFile(step)
-        if entry is not None:
-            self._showEntry(entry)
+        if self._panel is not None:
+            self._panel.selectAdjacentFile(step)
+            self._syncSelection()

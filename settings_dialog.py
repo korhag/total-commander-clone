@@ -25,6 +25,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from action_icons import iconSetChoices, normalizeIconSet
+from file_panel import (
+    DATE_MODIFIED_FORMATS,
+    DEFAULT_DATE_MODIFIED_FORMAT,
+    resolve_date_modified_format_key,
+)
 from theme import UI_SCALE_PRESETS, getThemeChoices, normalize_ui_scale, ui_scale_label
 from theme_picker import ThemePreviewDialog
 
@@ -98,6 +103,11 @@ class SettingsDialog(QDialog):
             "Ctrl+mouse wheel also steps density."
         )
         look_form.addRow(self._density_hint)
+
+        self._date_modified_format = QComboBox(self)
+        for format_key, (_, label) in DATE_MODIFIED_FORMATS.items():
+            self._date_modified_format.addItem(label, format_key)
+        look_form.addRow("Date Modified format", self._date_modified_format)
         body_layout.addWidget(look_box)
 
         files_box = QGroupBox("Files", self)
@@ -260,6 +270,7 @@ class SettingsDialog(QDialog):
         labels = (
             "Font size (10 = 100%)",
             "Interface density",
+            "Date Modified format",
             "Mirror (Ctrl+Shift+M)",
             "Default right path",
             "Keep up to date",
@@ -273,6 +284,7 @@ class SettingsDialog(QDialog):
         for combo in (
             self._icon_set,
             self._ui_scale,
+            self._date_modified_format,
             self._mirror_mode,
         ):
             for index in range(combo.count()):
@@ -306,6 +318,12 @@ class SettingsDialog(QDialog):
         self._font_size.setValue(int(self._settings.getSetting("font_size", 10)))
         cur_scale = normalize_ui_scale(self._settings.getSetting("ui_scale", 100))
         self._ui_scale.setCurrentIndex(max(0, self._ui_scale.findData(cur_scale)))
+        date_format = resolve_date_modified_format_key(
+            self._settings.getSetting("date_modified_format", DEFAULT_DATE_MODIFIED_FORMAT)
+        )
+        self._date_modified_format.setCurrentIndex(
+            self._date_modified_format.findData(date_format)
+        )
         self._show_hidden.setChecked(self._settings.getSetting("show_hidden_files", False))
         self._confirm_delete.setChecked(self._settings.getSetting("confirm_delete", True))
         self._check_updates.setChecked(
@@ -328,6 +346,7 @@ class SettingsDialog(QDialog):
             "action_icon_set": self._icon_set.currentData(),
             "font_size": self._font_size.value(),
             "ui_scale": self._ui_scale.currentData(),
+            "date_modified_format": self._date_modified_format.currentData(),
             "show_hidden_files": self._show_hidden.isChecked(),
             "confirm_delete": self._confirm_delete.isChecked(),
             "check_for_updates_on_startup": self._check_updates.isChecked(),

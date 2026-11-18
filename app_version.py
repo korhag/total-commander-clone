@@ -7,7 +7,7 @@ Bump APP_VERSION here and record changes in CHANGELOG.md for every release.
 # Public constants
 # ------------------------------------------------------------
 APP_NAME = "Waypane"
-APP_VERSION = "0.23.0"
+APP_VERSION = "0.24.0"
 
 
 def getWindowTitle():

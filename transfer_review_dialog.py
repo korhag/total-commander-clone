@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBoxL
 
 class TransferReviewDialog(QDialog):
     def __init__(self, operation, paths, source, destination, source_side,
-                 relative_paths=None, parent=None, search_root=False):
+                 relative_paths=None, parent=None, search_root=False, *, chosen_folder=False):
         super().__init__(parent)
         self.setWindowTitle(f"Review {operation.lower()}")
         self.resize(600, 300)
@@ -21,8 +21,9 @@ class TransferReviewDialog(QDialog):
         recursive = any(os.path.normcase(os.path.dirname(p)) != os.path.normcase(source)
                         for p in paths)
         destination_side = 'Right' if source_side == 'Left' else 'Left'
+        destination_label = "Chosen folder" if chosen_folder else f"{destination_side} pane"
         for title, path in ((f"From · {source_side} pane" + (' · Search root' if recursive or search_root else ''), source),
-                            (f"To · {destination_side} pane", destination)):
+                            (f"To · {destination_label}", destination)):
             layout.addWidget(QLabel(title))
             field = QLineEdit(path)
             field.setReadOnly(True)
@@ -33,7 +34,7 @@ class TransferReviewDialog(QDialog):
                           if os.path.normcase(os.path.dirname(p)) != os.path.normcase(source)), 0)
             name = relative_paths[index] if relative_paths else os.path.basename(paths[index])
             layout.addWidget(QLabel('Intended route example:'))
-            for path in (paths[index], os.path.join(destination, name)):
+            for path in (paths[index], os.path.normpath(os.path.join(destination, name))):
                 field = QLineEdit(path)
                 field.setReadOnly(True)
                 field.setToolTip(path)

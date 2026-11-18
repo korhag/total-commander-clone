@@ -48,7 +48,12 @@ DATE_MODIFIED_FORMATS = {
     "dd_mm_yyyy": ("%d/%m/%Y", "DD/MM/YYYY"),
     "dd_mm_yy": ("%d/%m/%y", "DD/MM/YY"),
     "dd_mm_yyyy_hm": ("%d/%m/%Y %H:%M", "DD/MM/YYYY hh:mm"),
+    "dd_mm_yy_hm": ("%d/%m/%y %H:%M", "DD/MM/YY hh:mm"),
     "mm_dd_yyyy": ("%m/%d/%Y", "MM/DD/YYYY"),
+    "mm_dd_yyyy_hm": ("%m/%d/%Y %H:%M", "MM/DD/YYYY hh:mm"),
+    "yyyy_mm_dd_dash": ("%Y-%m-%d", "YYYY-MM-DD"),
+    "yyyy_mm_dd_dash_hm": ("%Y-%m-%d %H:%M", "YYYY-MM-DD hh:mm"),
+    "yyyy_mm_dd_dash_hms": ("%Y-%m-%d %H:%M:%S", "YYYY-MM-DD hh:mm:ss"),
 }
 DEFAULT_DATE_MODIFIED_FORMAT = "yyyy_mm_dd_hm"
 
@@ -789,9 +794,11 @@ class FileSystemModel(QAbstractTableModel):
     # Method: setShowHidden
     # Purpose: Toggles visibility of hidden files/dotfiles.
     # --------------------------------------------------------
-    def setShowHidden(self, show):
+    def setShowHidden(self, show, *, reload=True):
+        if self._show_hidden == show:
+            return
         self._show_hidden = show
-        if self._current_path:
+        if reload and self._current_path:
             self.loadDirectory(self._current_path, force_rescan=True)
 
     def _skip_hidden_stat(self, full_path, name):
@@ -1301,10 +1308,13 @@ class FileSortFilterProxy(QSortFilterProxyModel):
         if left_entry is None or right_entry is None:
             return False
 
+        col = left.column()
         if left_entry["is_dir"] != right_entry["is_dir"]:
+            if col == 3 and self.sortOrder() == Qt.DescendingOrder:
+                # Qt reverses the comparison for descending order.
+                return not left_entry["is_dir"]
             return left_entry["is_dir"]
 
-        col = left.column()
         if col == 0:
             return natural_sort_key(left_entry["name"]) < natural_sort_key(right_entry["name"])
         elif col == 1:
@@ -1937,6 +1947,8 @@ class FilePanel(QWidget):
         self._auto_refresh_timer.setInterval(300)
         self._auto_refresh_timer.timeout.connect(self._applyPendingAutoRefresh)
         self._auto_refresh_deferred = False
+        self._pane_hidden = False
+        self._refresh_on_reveal = None
         self._dir_watcher = QFileSystemWatcher(self)
         self._dir_watcher.directoryChanged.connect(self._onWatchedDirectoryChanged)
         # When set, column and thumbnail saves write the tab list
@@ -3247,9 +3259,14 @@ class FilePanel(QWidget):
     def refresh(self, force_rescan=True):
         current = self._source_model.currentPath()
         if current:
-            selected = self.selectedPaths()
-            bar = self._table.verticalScrollBar()
-            scroll_value = bar.value() if bar is not None else None
+            if self._pane_hidden:
+                self._refresh_on_reveal = bool(self._refresh_on_reveal or force_rescan)
+                return
+            self._pending_reselect = self.selectedPaths()
+            self._pending_scroll = (
+                self._table.horizontalScrollBar().value(),
+                self._table.verticalScrollBar().value(),
+            )
             # Invalidate cache when the user explicitly forces a rescan.
             if force_rescan and self._source_model.isRecursive():
                 try:
@@ -3262,12 +3279,31 @@ class FilePanel(QWidget):
                     pass
             self._scroll_to_top_when_loaded = False
             self._source_model.loadDirectory(current, force_rescan=force_rescan)
-            if self._source_model.isLoading():
-                self._pending_reselect = selected
-                self._pending_scroll = scroll_value
-            else:
-                self._reselectPaths(selected)
+            if not self._source_model.isLoading() and not self._recursive_loading:
+                self._restorePendingViewState()
             self._updateFilterUi()
+
+    def setPaneHidden(self, hidden, *, resume_refresh=True):
+        """Keep the model while the pane is hidden and combine pending reloads."""
+        if self._pane_hidden == hidden:
+            return
+        self._pane_hidden = hidden
+        pending_auto = self._auto_refresh_deferred or self._auto_refresh_timer.isActive()
+        self._auto_refresh_timer.stop()
+        if hidden:
+            self._auto_refresh_deferred = pending_auto
+            self._closeScanProgress()
+            return
+
+        pending, self._refresh_on_reveal = self._refresh_on_reveal, None
+        self._auto_refresh_deferred = False
+        if not resume_refresh:
+            return
+        self._watchCurrentFolder()
+        if pending is not None:
+            self.refresh(force_rescan=pending)
+        elif pending_auto:
+            self._applyPendingAutoRefresh()
 
     # --------------------------------------------------------
     # Method: setAutoRefreshEnabled
@@ -3300,6 +3336,8 @@ class FilePanel(QWidget):
     #          stale instead.
     # --------------------------------------------------------
     def _watchCurrentFolder(self):
+        if self._pane_hidden:
+            return
         if not self._autoRefreshEnabled():
             self._clearDirectoryWatch()
             return
@@ -3344,6 +3382,9 @@ class FilePanel(QWidget):
     def _onWatchedDirectoryChanged(self, path):
         if not self._autoRefreshEnabled():
             return
+        if self._pane_hidden:
+            self._auto_refresh_deferred = True
+            return
         current = self._source_model.currentPath()
         if current and os.path.isdir(current):
             self._setWatchedDirectory(current)
@@ -3368,14 +3409,14 @@ class FilePanel(QWidget):
     #          reads the disk.
     # --------------------------------------------------------
     def _applyPendingAutoRefresh(self):
-        if self._renameInProgress():
+        if self._pane_hidden or self._renameInProgress():
             self._auto_refresh_deferred = True
             return
         self._auto_refresh_deferred = False
         if not self._autoRefreshEnabled():
             return
         current = self._source_model.currentPath()
-        if not current or not os.path.isdir(current):
+        if not current:
             return
         if self._source_model.isRecursive():
             try:
@@ -3388,22 +3429,7 @@ class FilePanel(QWidget):
                 pass
             return
 
-        bar = self._table.verticalScrollBar()
-        scroll_value = bar.value() if bar is not None else 0
-
         self.refresh(force_rescan=False)
-        if self._source_model.isLoading():
-            self._pending_scroll = scroll_value
-            return
-
-        if bar is None:
-            return
-
-        def restoreScroll():
-            bar.setValue(min(scroll_value, bar.maximum()))
-
-        restoreScroll()
-        QTimer.singleShot(0, restoreScroll)
 
     # --------------------------------------------------------
     # Method: _reselectPaths
@@ -3445,6 +3471,9 @@ class FilePanel(QWidget):
         root = self.currentPath()
         if not root:
             return "unaffected"
+        if self._pane_hidden:
+            self.refresh(force_rescan=True)
+            return "updated"
 
         root_norm = os.path.normpath(root)
 
@@ -3763,7 +3792,9 @@ class FilePanel(QWidget):
     # Show / Hide Hidden Files
     # --------------------------------------------------------
     def setShowHidden(self, show):
-        self._source_model.setShowHidden(show)
+        if self._source_model.showHiddenFiles() != show:
+            self._source_model.setShowHidden(show, reload=False)
+            self.refresh(force_rescan=True)
 
     # --------------------------------------------------------
     # In-Place Rename
@@ -4778,7 +4809,7 @@ class FilePanel(QWidget):
     def _onRecursiveScanRequested(self, path, gen):
         quiet = self._source_model.quietScanPending()
         self._cancelRecursiveScanThread()
-        if not quiet:
+        if not quiet and not self._pane_hidden:
             self._scan_progress = QProgressDialog(self)
             self._scan_progress.setWindowTitle("Scanning subfolders")
             self._scan_progress.setLabelText("Starting…")
@@ -4829,6 +4860,7 @@ class FilePanel(QWidget):
         self._source_model.applyRecursiveScanResult(gen, entries)
         self._proxy_model.invalidateFilter()
         self._updateFilterUi()
+        self._restorePendingViewState()
         thr = self._scan_thread
         self._scan_thread = None
         if thr is not None:
@@ -4914,12 +4946,9 @@ class FilePanel(QWidget):
             self._reselectPaths(paths)
         if scroll is None:
             return
-        bar = self._table.verticalScrollBar()
-        if bar is None:
-            return
-
-        def restoreScroll(value=scroll, scroll_bar=bar):
-            scroll_bar.setValue(min(value, scroll_bar.maximum()))
+        def restoreScroll():
+            self._table.horizontalScrollBar().setValue(scroll[0])
+            self._table.verticalScrollBar().setValue(scroll[1])
 
         restoreScroll()
         QTimer.singleShot(0, restoreScroll)

@@ -121,8 +121,10 @@ def _formatByteSize(num_bytes):
     return f"{size / 1024.0:.1f} PB"
 
 
-def _pathByteSize(path):
+def _pathByteSize(path, cancel_check):
     """Total bytes for a file or directory tree."""
+    if cancel_check():
+        raise UserAbortError()
     if os.path.isfile(path):
         try:
             return os.path.getsize(path)
@@ -130,7 +132,11 @@ def _pathByteSize(path):
             return 0
     total = 0
     for root, _dirs, files in os.walk(path):
+        if cancel_check():
+            raise UserAbortError()
         for name in files:
+            if cancel_check():
+                raise UserAbortError()
             try:
                 total += os.path.getsize(os.path.join(root, name))
             except OSError:
@@ -778,6 +784,8 @@ class FileOperationWorker(QThread):
         self._conflict_match_policy = None
         self._total_bytes = 0
         self._bytes_completed = 0
+        self._item_sizes = []
+        self._item_bytes_copied = 0
 
     # --------------------------------------------------------
     # Method: cancel
@@ -829,8 +837,12 @@ class FileOperationWorker(QThread):
         )
         if use_byte_progress:
             self.progressChanged.emit(0, "", "Calculating size...")
-            self._total_bytes = sum(_pathByteSize(p) for p in self._file_paths)
-            self._bytes_completed = 0
+            try:
+                self._item_sizes = [_pathByteSize(path, self._isCancelled) for path in self._file_paths]
+            except UserAbortError:
+                self.operationFinished.emit(False, "Operation cancelled.")
+                return
+            self._total_bytes = sum(self._item_sizes)
 
         for i, source_path in enumerate(self._file_paths):
             if self._cancelled:
@@ -869,11 +881,19 @@ class FileOperationWorker(QThread):
                 self._errors.append(error_msg)
                 self.errorOccurred.emit(file_name, str(e))
 
+            if use_byte_progress:
+                self._bytes_completed += self._item_sizes[i]
+                self._item_bytes_copied = 0
+                self._emitProgress(file_name, i + 1, total)
+
         if self._errors:
             self.operationFinished.emit(False, _summarizeErrors(self._errors))
         else:
             self._emitProgress("Done", total, total, percent_override=100)
             self.operationFinished.emit(True, f"Successfully processed {total} item(s).")
+
+    def _isCancelled(self):
+        return self._cancelled
 
     # --------------------------------------------------------
     # Method: _askConflict
@@ -938,14 +958,13 @@ class FileOperationWorker(QThread):
         bytes_in_item=0,
         percent_override=None,
     ):
+        done_bytes = self._bytes_completed
+        if items_done < len(self._item_sizes):
+            done_bytes += min(self._item_sizes[items_done], self._item_bytes_copied + bytes_in_item)
         if percent_override is not None:
             percent = percent_override
         elif self._total_bytes > 0:
-            overall_bytes = min(
-                self._bytes_completed + bytes_in_item,
-                self._total_bytes,
-            )
-            percent = int(overall_bytes * 100 / self._total_bytes)
+            percent = int(done_bytes * 100 / self._total_bytes)
         elif total_items > 0:
             percent = int(items_done * 100 / total_items)
         else:
@@ -954,7 +973,6 @@ class FileOperationWorker(QThread):
         percent = max(0, min(100, percent))
         detail = f"{items_done} / {total_items} items"
         if self._total_bytes > 0:
-            done_bytes = min(self._bytes_completed + bytes_in_item, self._total_bytes)
             detail += (
                 f"  •  {_formatByteSize(done_bytes)} / {_formatByteSize(self._total_bytes)}"
             )
@@ -965,12 +983,6 @@ class FileOperationWorker(QThread):
     # Purpose: Copy a single file in chunks with byte progress.
     # --------------------------------------------------------
     def _copyFileWithProgress(self, source, dest_path, display_name, item_index, total_items):
-        item_size = 0
-        try:
-            item_size = os.path.getsize(source)
-        except OSError:
-            pass
-
         bytes_in_item = 0
         try:
             with open(source, "rb") as src_f, open(dest_path, "wb") as dst_f:
@@ -990,7 +1002,7 @@ class FileOperationWorker(QThread):
         # Bytes are already in place. A cloud drive (Google Drive) often
         # rejects timestamps; that must not delete the new file.
         self._copyFileAttributes(source, dest_path)
-        self._bytes_completed += item_size
+        self._item_bytes_copied += bytes_in_item
 
     # --------------------------------------------------------
     # Method: _copyFileAttributes
@@ -1007,8 +1019,11 @@ class FileOperationWorker(QThread):
     # Purpose: Copy a directory tree file-by-file with byte progress.
     # --------------------------------------------------------
     def _copyDirectoryWithProgress(self, source, dest_path, item_index, total_items):
+        def on_walk_error(error):
+            raise error
+
         root_name = os.path.basename(source.rstrip(os.sep)) or source
-        for dir_root, dir_names, file_names in os.walk(source):
+        for dir_root, dir_names, file_names in os.walk(source, onerror=on_walk_error):
             if self._cancelled:
                 raise UserAbortError()
             rel = os.path.relpath(dir_root, source)
@@ -1046,15 +1061,6 @@ class FileOperationWorker(QThread):
             pass
 
     # --------------------------------------------------------
-    # Method: _finishItemProgress
-    # Purpose: Mark top-level item bytes done after copy/move.
-    # --------------------------------------------------------
-    def _finishItemProgress(self, source, file_name, item_index, total_items):
-        expected = sum(_pathByteSize(p) for p in self._file_paths[: item_index + 1])
-        self._bytes_completed = min(expected, self._total_bytes)
-        self._emitProgress(file_name, item_index + 1, total_items)
-
-    # --------------------------------------------------------
     # Method: _destPathForItem
     # Purpose: Flat basename dest, or join(dest_dir, relative_path)
     #          when keeping folder structure. Creates parent dirs.
@@ -1075,7 +1081,7 @@ class FileOperationWorker(QThread):
     # --------------------------------------------------------
     # Method: _copyItem
     # --------------------------------------------------------
-    def _adjustDestination(self, source, dest_path, name, item_index, total_items):
+    def _adjustDestination(self, source, dest_path, name):
         """
         Keep a copy/move from writing a path onto itself or into its own tree.
         Returns (dest_path, name), or None when a move has nothing to do.
@@ -1084,7 +1090,6 @@ class FileOperationWorker(QThread):
         if relation == "inside":
             raise OSError("Cannot copy/move a folder into itself.")
         if relation == "same" and self._operation == self.OPERATION_MOVE:
-            self._finishItemProgress(source, name, item_index, total_items)
             return None
         if relation == "same":
             dest_path = _resolveConflictPath(dest_path)
@@ -1092,11 +1097,11 @@ class FileOperationWorker(QThread):
         return dest_path, name
 
     def _copyDirectoryOrAbort(self, source, dest_path, item_index, total_items):
-        """Copy a folder, and remove the partial destination if the user cancels."""
+        """Copy a folder and remove any incomplete output on failure."""
+        os.makedirs(dest_path)
         try:
-            os.makedirs(dest_path, exist_ok=True)
             self._copyDirectoryWithProgress(source, dest_path, item_index, total_items)
-        except UserAbortError:
+        except (OSError, UserAbortError):
             self._removePartial(dest_path)
             raise
 
@@ -1124,7 +1129,7 @@ class FileOperationWorker(QThread):
 
     def _copyItem(self, source, dest_dir, item_index, total_items, relative_path=None):
         dest_path, name = self._destPathForItem(source, dest_dir, relative_path)
-        adjusted = self._adjustDestination(source, dest_path, name, item_index, total_items)
+        adjusted = self._adjustDestination(source, dest_path, name)
         if adjusted is None:
             return
         dest_path, name = adjusted
@@ -1132,7 +1137,6 @@ class FileOperationWorker(QThread):
         if os.path.exists(dest_path):
             resolved = self._askConflict(source, dest_path, name)
             if resolved is _SKIP_ITEM:
-                self._finishItemProgress(source, name, item_index, total_items)
                 return
             dest_path = resolved
             parent = os.path.dirname(dest_path)
@@ -1146,14 +1150,13 @@ class FileOperationWorker(QThread):
                 self._copyFileWithProgress(source, dest_path, name, item_index, total_items)
 
         self._writeWithBackup(dest_path, produce)
-        self._finishItemProgress(source, name, item_index, total_items)
 
     # --------------------------------------------------------
     # Method: _moveItem
     # --------------------------------------------------------
     def _moveItem(self, source, dest_dir, item_index, total_items, relative_path=None):
         dest_path, name = self._destPathForItem(source, dest_dir, relative_path)
-        adjusted = self._adjustDestination(source, dest_path, name, item_index, total_items)
+        adjusted = self._adjustDestination(source, dest_path, name)
         if adjusted is None:
             return
         dest_path, name = adjusted
@@ -1161,7 +1164,6 @@ class FileOperationWorker(QThread):
         if os.path.exists(dest_path):
             resolved = self._askConflict(source, dest_path, name)
             if resolved is _SKIP_ITEM:
-                self._finishItemProgress(source, name, item_index, total_items)
                 return
             dest_path = resolved
             parent = os.path.dirname(dest_path)
@@ -1186,7 +1188,6 @@ class FileOperationWorker(QThread):
         self._writeWithBackup(dest_path, produce)
         if copied:
             self._removeMovedSource(source, dest_path)
-        self._finishItemProgress(source, name, item_index, total_items)
 
     # --------------------------------------------------------
     # Method: _removeMovedSource

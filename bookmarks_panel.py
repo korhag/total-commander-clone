@@ -36,6 +36,7 @@ def _iconForPath(path, is_file):
 # Data roles for tree items
 ROLE_TYPE = Qt.UserRole
 ROLE_PATH = Qt.UserRole + 1
+ROLE_BOOKMARK_KIND = Qt.UserRole + 2
 TYPE_BOOKMARK = "bookmark"
 TYPE_GROUP = "group"
 
@@ -65,8 +66,9 @@ def _nodeToItem(node, parent_item=None):
         path = node.get("path", "")
         item.setData(0, ROLE_PATH, path)
         item.setToolTip(0, path)
-        is_file = node.get("kind") == "file" or (path and os.path.isfile(path))
-        item.setIcon(0, _iconForPath(path, is_file))
+        kind = node.get("kind")
+        item.setData(0, ROLE_BOOKMARK_KIND, kind)
+        item.setIcon(0, _iconForPath(path, kind == "file"))
         return item
     if node.get("type") == TYPE_GROUP:
         item = QTreeWidgetItem(parent_item, [node.get("name", "")])
@@ -86,13 +88,15 @@ def _itemToNode(item):
     t = item.data(0, ROLE_TYPE)
     if t == TYPE_BOOKMARK:
         path = item.data(0, ROLE_PATH) or ""
-        kind = "file" if path and os.path.isfile(path) else "folder"
-        return {
+        kind = item.data(0, ROLE_BOOKMARK_KIND)
+        node = {
             "type": TYPE_BOOKMARK,
             "name": item.text(0),
             "path": path,
-            "kind": kind,
         }
+        if kind in ("file", "folder"):
+            node["kind"] = kind
+        return node
     if t == TYPE_GROUP:
         children = []
         for i in range(item.childCount()):
@@ -584,7 +588,7 @@ def _refreshItemIcon(item):
         item.setIcon(0, iconFor("", is_dir=True))
     elif kind == TYPE_BOOKMARK:
         path = item.data(0, ROLE_PATH) or ""
-        is_file = bool(path) and os.path.isfile(path)
+        is_file = item.data(0, ROLE_BOOKMARK_KIND) == "file"
         item.setIcon(0, _iconForPath(path, is_file))
     for index in range(item.childCount()):
         _refreshItemIcon(item.child(index))
@@ -687,13 +691,21 @@ class BookmarksPanel(QWidget):
         if not path:
             return
         if os.path.isdir(path):
+            self._rememberBookmarkKind(item, "folder")
             self.bookmarkActivated.emit(path)
         elif os.path.isfile(path):
+            self._rememberBookmarkKind(item, "file")
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
                 QMessageBox.warning(
                     self, "Open failed",
                     f"Could not open: {path}"
                 )
+
+    def _rememberBookmarkKind(self, item, kind):
+        if item.data(0, ROLE_BOOKMARK_KIND) != kind:
+            item.setData(0, ROLE_BOOKMARK_KIND, kind)
+            _refreshItemIcon(item)
+            self._emitStructureChanged()
 
     def _onContextMenu(self, pos):
         item = self._tree.itemAt(pos)
@@ -732,11 +744,13 @@ class BookmarksPanel(QWidget):
         self._current_path_provider = provider
 
     def _applyBookmarkData(self, item, name, path):
+        if path != item.data(0, ROLE_PATH):
+            kind = "file" if os.path.isfile(path) else "folder" if os.path.isdir(path) else None
+            item.setData(0, ROLE_BOOKMARK_KIND, kind)
         item.setText(0, name)
         item.setData(0, ROLE_PATH, path)
         item.setToolTip(0, path)
-        is_file = path and os.path.isfile(path)
-        item.setIcon(0, _iconForPath(path, is_file))
+        _refreshItemIcon(item)
 
     def _editBookmark(self, item):
         path = item.data(0, ROLE_PATH) or ""

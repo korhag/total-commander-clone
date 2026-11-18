@@ -57,7 +57,7 @@ class SidebarRail(QFrame):
             label + "\n\nShow the sidebar with " + label.lower() + " open."
         )
         button.setAutoRaise(True)
-        button.setFocusPolicy(Qt.NoFocus)
+        button.setFocusPolicy(Qt.TabFocus)
         button.setToolButtonStyle(Qt.ToolButtonIconOnly)
         button.setAccessibleName(label)
         button.clicked.connect(

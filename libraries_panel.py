@@ -170,6 +170,7 @@ class LibrariesPanel(QWidget):
         self._suggestions = {}
         self._rows = []
         self._selected_library_id = ""
+        self._other_pane_available = True
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -287,6 +288,13 @@ class LibrariesPanel(QWidget):
 
     def selectedLibraryId(self):
         return self._selected_library_id
+
+    def setOtherPaneAvailable(self, available):
+        self._other_pane_available = available
+
+    def setScanning(self, scanning):
+        self._btn_scan.setEnabled(not scanning)
+        self._btn_scan.setText("Scanning…" if scanning else "Scan")
 
     def _toolButton(self, text, tip, callback):
         button = QPushButton(text)
@@ -520,6 +528,8 @@ class LibrariesPanel(QWidget):
         path = item.data(Qt.UserRole) or ""
         menu = QMenu(self)
         menu.addAction("Open here", lambda: self.navigateRequested.emit(path))
-        menu.addAction("Open in the other panel", lambda: self.navigateOtherRequested.emit(path))
+        other = menu.addAction("Open in other pane", lambda: self.navigateOtherRequested.emit(path))
+        other.setEnabled(self._other_pane_available)
         menu.addAction("Edit Fields...", lambda: self.editFieldsRequested.emit(path))
         menu.exec_(self._results_list.viewport().mapToGlobal(pos))
+        menu.deleteLater()
